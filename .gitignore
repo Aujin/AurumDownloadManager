@@ -1,0 +1,26 @@
+# Node / frontend
+node_modules/
+dist/
+.vite/
+coverage/
+*.tsbuildinfo
+
+# Rust / Tauri
+target/
+src-tauri/target/
+src-tauri/gen/
+
+# Local settings and generated binaries
+.env
+.env.*
+!.env.example
+*.log
+*.aria2
+*.torrent
+downloads/
+
+# Editors / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
