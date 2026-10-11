@@ -1,28 +1,41 @@
-# ADM
+# Aurum Download Manager
 
-ADM 是一个计划面向 Windows、macOS 和 Linux 的桌面下载器。首版目标是统一管理 HTTP(S)、`.torrent` 和磁力链接下载，并提供浏览器插件与可选的剪切板监听。
+面向 Windows、macOS 和 Linux 的桌面下载器。当前开发版已实现 HTTP(S)、磁力链接与 `.torrent` 任务的添加、进度查看、暂停、继续、移除，以及可选的剪切板链接识别。
 
-## 计划中的组成部分
+## 技术结构
 
-- 桌面端：Tauri 2、React、TypeScript。
-- 应用层：Rust，管理下载任务、配置、历史记录和本地通信。
-- 下载内核：首版计划集成 aria2，通过本机 JSON-RPC 控制；内核接口独立，便于后续替换。
-- 浏览器插件：Chrome、Edge、Firefox，使用 Native Messaging 向桌面端发送下载请求。Safari 单独适配。
+- **桌面界面**：Tauri 2 + React + TypeScript。
+- **任务控制**：Rust 启动并管理本机 aria2 进程，通过仅监听 `127.0.0.1` 且带随机密钥的 JSON-RPC 通信。
+- **任务恢复**：aria2 会话定期写入应用数据目录，正常退出时再次保存。
+- **文件位置**：默认保存在系统“下载”目录。
 
-## 开发顺序
+aria2 目前是开发环境依赖，尚未随安装包分发。正式发布前需要确定各平台的打包和 GPL-2.0 许可方案。
 
-1. Windows 桌面端：添加链接、种子和磁力任务；暂停、恢复、队列和任务持久化。
-2. 剪切板识别与确认，保持可选开启。
-3. Chrome/Edge 插件，然后适配 Firefox。
-4. macOS、Linux 打包与测试；随后评估 Safari 和移动端。
+## 本地开发
 
-当前仓库是项目起点，尚未包含可运行的下载器。下载内核的分发方式和许可要求将在打包发布前确认。
+需要 Node.js、Rust MSVC 工具链、Tauri 的系统依赖以及 `aria2c`。安装 aria2 后请确保它位于 `PATH`，也可通过 `ADM_ARIA2_PATH` 指定其完整路径。
 
-## GitHub
-
-本地仓库使用 `main` 分支。GitHub 仓库创建后，可添加远端并推送：
-
-```sh
-git remote add origin https://github.com/aujin/ADM.git
-git push -u origin main
+```powershell
+npm install
+npm run tauri dev
 ```
+
+检查前端和 Rust 代码：
+
+```powershell
+npm run build
+cargo check --manifest-path src-tauri/Cargo.toml
+```
+
+如果 aria2 尚未安装，界面会显示下载内核未连接，添加任务按钮不可用。
+
+## 接下来
+
+1. 完善种子内文件选择、保存目录设置、限速和下载队列。
+2. 为 Chrome、Edge、Firefox 开发浏览器插件，通过 Native Messaging 与桌面端通信。
+3. 完成 Windows 安装包与真实下载测试，再验证 macOS、Linux。
+4. 单独适配 Safari，并评估移动端后台下载限制。
+
+## 仓库
+
+GitHub：<https://github.com/Aujin/AurumDownloadManager>。本地默认分支为 `main`。
