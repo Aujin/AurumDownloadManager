@@ -120,6 +120,10 @@ fn launch_engine(app: &tauri::AppHandle, settings: &Settings) -> Result<Engine, 
     let secret = bytes.iter().map(|byte| format!("{byte:02x}")).collect::<String>();
     let binary = std::env::var_os("ADM_ARIA2_PATH")
         .map(PathBuf::from)
+        .or_else(|| {
+            let name = if cfg!(windows) { "aria2c.exe" } else { "aria2c" };
+            std::env::current_exe().ok()?.parent().map(|dir| dir.join(name)).filter(|path| path.is_file())
+        })
         .unwrap_or_else(|| PathBuf::from("aria2c"));
 
     let mut command = Command::new(binary);

@@ -17,7 +17,7 @@
 
 Edge 插件试用版位于 `browser-extension/edge/`，可在插件弹窗里选择每次询问、交给 Aurum 或使用 Edge 下载。右键链接也可直接交给 Aurum。插件通过 Native Messaging 把链接送到桌面程序；目前尚未完成实际 Edge 侧载验收或商店发布。
 
-aria2 目前是开发环境依赖，尚未随安装包分发。正式发布前需要确定各平台的打包和 GPL-2.0 许可方案。
+Windows 便携版把 aria2 1.37.0、许可文本和对应源码一同放在 `output/windows/`。桌面程序优先使用同目录的 `aria2c.exe`，无需单独安装。macOS、Linux 的可分发包仍待制作。
 
 ## 本地开发
 
@@ -43,9 +43,9 @@ cargo check --manifest-path src-tauri/Cargo.toml
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-output.ps1
 ```
 
-结果会生成在本地的 `output/`：`edge-extension/` 是可以直接在 Edge 的扩展管理页加载的文件夹，`windows/` 包含桌面程序和本机通信组件；两个 ZIP 便于复制。具体加载和注册步骤见生成的 `output/README.md`。插件无需额外编译，构建脚本会把源文件复制到输出目录。
+结果会生成在本地的 `output/`：`edge-extension/` 是可以直接在 Edge 的扩展管理页加载的文件夹，`windows/` 包含桌面程序、本机通信组件和 aria2；两个 ZIP 便于复制。具体加载和注册步骤见生成的 `output/README.md`。插件无需额外编译，构建脚本会把源文件复制到输出目录。
 
-如果 aria2 尚未安装，界面会显示下载内核未连接，添加任务按钮不可用。
+开发环境若没有安装 aria2，界面会显示下载内核未连接；便携版使用随包提供的 aria2。
 
 ## 接下来
 

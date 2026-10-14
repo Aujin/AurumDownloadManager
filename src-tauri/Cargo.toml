@@ -1,5 +1,6 @@
 [package]
 name = "aurum-download-manager"
+default-run = "aurum-download-manager"
 version = "0.1.0"
 description = "Cross-platform desktop download manager"
 edition = "2021"
