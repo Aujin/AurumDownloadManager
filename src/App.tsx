@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
+import { SettingsPanel, TaskConfigPanel, type Settings, type TaskConfig } from "./settings";
 
 type TaskStatus = "active" | "waiting" | "paused" | "complete" | "error" | "removed";
 type Task = {
@@ -13,8 +14,13 @@ type Task = {
   errorMessage?: string;
   files?: { path: string }[];
   bittorrent?: { info?: { name?: string } };
+  saveDir?: string;
+  temporaryDir?: string;
+  moving?: boolean;
+  moveError?: string;
+  finalPaths?: string[];
 };
-type EngineInfo = { ready: boolean; message: string; downloadDir: string };
+type EngineInfo = { ready: boolean; message: string; downloadDir: string; temporaryDir: string };
 type Filter = "all" | "active" | "completed";
 
 function formatSize(value: string | number, rate = false) {
@@ -34,7 +40,7 @@ const labels: Record<TaskStatus, string> = {
 };
 
 export default function App() {
-  const [engine, setEngine] = useState<EngineInfo>({ ready: false, message: "正在连接下载内核…", downloadDir: "" });
+  const [engine, setEngine] = useState<EngineInfo>({ ready: false, message: "正在连接下载内核…", downloadDir: "", temporaryDir: "" });
   const [tasks, setTasks] = useState<Task[]>([]);
   const [filter, setFilter] = useState<Filter>("all");
   const [url, setUrl] = useState("");
@@ -42,6 +48,10 @@ export default function App() {
   const [notice, setNotice] = useState("");
   const [clipboardEnabled, setClipboardEnabled] = useState(false);
   const [clipboardCandidate, setClipboardCandidate] = useState("");
+  const [settings, setSettings] = useState<Settings | null>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [taskConfig, setTaskConfig] = useState<TaskConfig | null>(null);
+  const [taskConfigIsTorrent, setTaskConfigIsTorrent] = useState(false);
 
   async function refresh() {
     const next = await invoke<EngineInfo>("engine_info");
@@ -56,10 +66,33 @@ export default function App() {
       catch (error) { if (alive) setNotice(String(error)); }
     };
     void tick();
+    void invoke<Settings>("get_settings").then((value) => {
+      if (alive) { setSettings(value); setClipboardEnabled(value.clipboardMonitoring); }
+    }).catch((error) => { if (alive) setNotice(String(error)); });
     const interval = window.setInterval(tick, 2000);
     const unlisten = listen<string>("clipboard-link", ({ payload }) => setClipboardCandidate(payload));
     return () => { alive = false; window.clearInterval(interval); void unlisten.then((stop) => stop()); };
   }, []);
+
+  async function saveSettings(next: Settings) {
+    await invoke("save_settings", { next });
+    setSettings(next);
+    setClipboardEnabled(next.clipboardMonitoring);
+    await refresh();
+  }
+
+  async function openTaskConfig(task: Task) {
+    try {
+      const config = await invoke<TaskConfig>("get_task_config", { gid: task.gid });
+      setTaskConfigIsTorrent(Boolean(task.bittorrent));
+      setTaskConfig(config);
+    } catch (error) { setNotice(String(error)); }
+  }
+
+  async function saveTaskConfig(config: TaskConfig) {
+    await invoke("update_task_config", { config });
+    await refresh();
+  }
 
   async function submitUrl(value = url) {
     const candidate = value.trim();
@@ -92,6 +125,7 @@ export default function App() {
     try {
       await invoke("set_clipboard_monitoring", { enabled });
       setClipboardEnabled(enabled);
+      setSettings((previous) => previous ? { ...previous, clipboardMonitoring: enabled } : previous);
       if (!enabled) setClipboardCandidate("");
     } catch (error) { setNotice(String(error)); }
   }
@@ -111,6 +145,7 @@ export default function App() {
       <button className={`nav-item ${filter === "all" ? "selected" : ""}`} onClick={() => setFilter("all")}>全部任务 <span>{tasks.length}</span></button>
       <button className={`nav-item ${filter === "active" ? "selected" : ""}`} onClick={() => setFilter("active")}>进行中 <span>{activeCount}</span></button>
       <button className={`nav-item ${filter === "completed" ? "selected" : ""}`} onClick={() => setFilter("completed")}>已结束</button>
+      <button className="nav-item settings-nav" onClick={() => setSettingsOpen(true)}>设置 <span>⚙</span></button>
       <div className="sidebar-bottom"><span className={`status-dot ${engine.ready ? "online" : ""}`} />{engine.ready ? "下载内核已连接" : "下载内核未连接"}</div>
     </aside>
     <main className="main-area">
@@ -118,7 +153,7 @@ export default function App() {
       <section className="add-panel">
         <div className="add-panel-header"><div><h2>添加新任务</h2><p>粘贴 HTTP、HTTPS 或 magnet 链接</p></div><button className="secondary-button" onClick={chooseTorrent} disabled={!engine.ready || busy}>选择 .torrent 文件</button></div>
         <form onSubmit={(event) => { event.preventDefault(); void submitUrl(); }} className="url-form"><input aria-label="下载链接" placeholder="https://example.com/file.zip 或 magnet:?xt=…" value={url} onChange={(event) => setUrl(event.target.value)} /><button type="submit" disabled={!engine.ready || busy || !url.trim()}>开始下载</button></form>
-        <div className="add-footer"><span>默认保存位置：{engine.downloadDir || "系统下载文件夹"}</span><label className="clipboard-control"><input type="checkbox" checked={clipboardEnabled} onChange={toggleClipboard} />监听剪切板</label></div>
+        <div className="add-footer"><span>保存：{engine.downloadDir || "系统下载文件夹"}<br />半成品：{engine.temporaryDir || "未设置"}</span><label className="clipboard-control"><input type="checkbox" checked={clipboardEnabled} onChange={toggleClipboard} />监听剪切板</label></div>
       </section>
       {clipboardCandidate && <div className="clipboard-banner"><div><strong>剪切板中发现下载链接</strong><p>{clipboardCandidate}</p></div><div><button onClick={() => void submitUrl(clipboardCandidate)}>添加任务</button><button className="text-button" onClick={() => setClipboardCandidate("")}>忽略</button></div></div>}
       {!engine.ready && <div className="notice warning"><strong>下载内核尚未就绪</strong><span>{engine.message}</span></div>}
@@ -128,9 +163,11 @@ export default function App() {
           const total = Number(task.totalLength || 0);
           const done = Number(task.completedLength || 0);
           const percent = total > 0 ? Math.min(100, Math.round(done / total * 100)) : 0;
-          return <article className="task-card" key={task.gid}><div className="file-icon">{task.bittorrent ? "BT" : "↓"}</div><div className="task-detail"><div className="task-head"><strong title={taskName(task)}>{taskName(task)}</strong><span className={`task-status ${task.status}`}>{labels[task.status]}</span></div><div className="task-meta"><span>{formatSize(done)} / {total ? formatSize(total) : "未知大小"}</span><span>{task.status === "active" ? formatSize(task.downloadSpeed, true) : `${percent}%`}</span></div><div className="progress-track"><div style={{ width: `${percent}%` }} /></div>{task.errorMessage && <p className="task-error">{task.errorMessage}</p>}</div><div className="task-actions">{task.status === "active" && <button onClick={() => void act(task, "pause")}>暂停</button>}{task.status === "paused" && <button onClick={() => void act(task, "resume")}>继续</button>}{["waiting", "active", "paused"].includes(task.status) ? <button onClick={() => void act(task, "remove")}>移除</button> : <button onClick={() => void act(task, "clear")}>清除记录</button>}</div></article>;
+          return <article className="task-card" key={task.gid}><div className="file-icon">{task.bittorrent ? "BT" : "↓"}</div><div className="task-detail"><div className="task-head"><strong title={taskName(task)}>{taskName(task)}</strong><span className={`task-status ${task.status}`}>{task.moving ? "搬运中" : labels[task.status]}</span></div><div className="task-meta"><span>{formatSize(done)} / {total ? formatSize(total) : "未知大小"}</span><span>{task.status === "active" ? formatSize(task.downloadSpeed, true) : `${percent}%`}</span></div><div className="progress-track"><div style={{ width: `${percent}%` }} /></div>{task.saveDir && <p className="task-path">完成后保存至：{task.saveDir}</p>}{task.moveError && <p className="task-error">{task.moveError}</p>}{task.errorMessage && <p className="task-error">{task.errorMessage}</p>}</div><div className="task-actions">{(["waiting", "active", "paused"].includes(task.status) || !!task.moveError) && <button onClick={() => void openTaskConfig(task)}>{task.moveError ? "调整并重试" : "调整"}</button>}{task.status === "active" && <button onClick={() => void act(task, "pause")}>暂停</button>}{task.status === "paused" && <button onClick={() => void act(task, "resume")}>继续</button>}{["waiting", "active", "paused"].includes(task.status) ? <button onClick={() => void act(task, "remove")}>移除</button> : <button onClick={() => void act(task, "clear")}>清除记录</button>}</div></article>;
         })}</div>}
       </section>
     </main>
+    {settingsOpen && settings && <SettingsPanel initial={settings} onSave={saveSettings} onClose={() => setSettingsOpen(false)} />}
+    {taskConfig && <TaskConfigPanel initial={taskConfig} isTorrent={taskConfigIsTorrent} onSave={saveTaskConfig} onClose={() => setTaskConfig(null)} />}
   </div>;
 }

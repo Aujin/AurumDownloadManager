@@ -1,7 +1,12 @@
+mod placement;
+mod settings;
+
 use base64::Engine as _;
+use placement::{Placement, Placements};
 use rand::{rngs::OsRng, RngCore};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use settings::Settings;
 use std::{
     fs,
     io::{Read, Write},
@@ -68,6 +73,10 @@ impl Engine {
 struct AppState {
     engine: Mutex<Engine>,
     clipboard_enabled: AtomicBool,
+    settings: Mutex<Settings>,
+    settings_path: PathBuf,
+    placements: Placements,
+    placements_path: PathBuf,
 }
 
 #[derive(Serialize)]
@@ -76,10 +85,11 @@ struct EngineInfo {
     ready: bool,
     message: String,
     download_dir: String,
+    temporary_dir: String,
 }
 
-fn start_engine(app: &tauri::AppHandle) -> Engine {
-    match launch_engine(app) {
+fn start_engine(app: &tauri::AppHandle, settings: &Settings) -> Engine {
+    match launch_engine(app, settings) {
         Ok(engine) => engine,
         Err(error) => Engine {
             child: None,
@@ -90,9 +100,9 @@ fn start_engine(app: &tauri::AppHandle) -> Engine {
     }
 }
 
-fn launch_engine(app: &tauri::AppHandle) -> Result<Engine, String> {
+fn launch_engine(app: &tauri::AppHandle, settings: &Settings) -> Result<Engine, String> {
     let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    let download_dir = app.path().download_dir().map_err(|e| e.to_string())?;
+    let download_dir = settings::checked_dir(&settings.temporary_dir)?;
     fs::create_dir_all(&data_dir).map_err(|e| e.to_string())?;
     fs::create_dir_all(&download_dir).map_err(|e| e.to_string())?;
 
@@ -114,6 +124,7 @@ fn launch_engine(app: &tauri::AppHandle) -> Result<Engine, String> {
 
     let mut command = Command::new(binary);
     command
+        .arg("--no-conf=true")
         .arg("--enable-rpc=true")
         .arg("--rpc-listen-all=false")
         .arg(format!("--rpc-listen-port={port}"))
@@ -124,7 +135,8 @@ fn launch_engine(app: &tauri::AppHandle) -> Result<Engine, String> {
         .arg("--save-session-interval=5")
         .arg("--rpc-save-upload-metadata=true")
         .arg("--continue=true")
-        .arg("--max-concurrent-downloads=4")
+        .arg(format!("--max-concurrent-downloads={}", settings.max_concurrent_downloads))
+        .arg("--seed-time=0")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
@@ -169,15 +181,18 @@ async fn rpc(state: &AppState, method: &str, mut params: Vec<Value>) -> Result<V
 }
 
 #[tauri::command]
-async fn engine_info(app: tauri::AppHandle, state: tauri::State<'_, AppState>) -> Result<EngineInfo, String> {
-    let download_dir = app.path().download_dir().map(|p| p.display().to_string()).unwrap_or_default();
+async fn engine_info(state: tauri::State<'_, AppState>) -> Result<EngineInfo, String> {
+    let settings = state.settings.lock().map_err(|e| e.to_string())?.clone();
+    let download_dir = settings.download_dir;
+    let temporary_dir = settings.temporary_dir;
     Ok(match rpc(&state, "aria2.getVersion", vec![]).await {
         Ok(result) => EngineInfo {
             ready: true,
             message: format!("aria2 {}", result.get("version").and_then(Value::as_str).unwrap_or("已连接")),
             download_dir,
+            temporary_dir,
         },
-        Err(error) => EngineInfo { ready: false, message: error, download_dir },
+        Err(error) => EngineInfo { ready: false, message: error, download_dir, temporary_dir },
     })
 }
 
@@ -192,7 +207,45 @@ async fn list_tasks(state: tauri::State<'_, AppState>) -> Result<Vec<Value>, Str
         let result = rpc(&state, method, params).await?;
         tasks.extend(result.as_array().ok_or("无效的任务列表")?.iter().cloned());
     }
+    for task in &mut tasks {
+        placement::decorate_and_finalize(task, &state.placements, &state.placements_path);
+    }
     Ok(tasks)
+}
+
+fn new_gid() -> String {
+    let mut bytes = [0u8; 8];
+    OsRng.fill_bytes(&mut bytes);
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn task_defaults(state: &AppState, source: Option<&str>) -> Result<(String, PathBuf, PathBuf, Value), String> {
+    let settings = state.settings.lock().map_err(|e| e.to_string())?.clone();
+    let gid = new_gid();
+    let temporary_dir = PathBuf::from(&settings.temporary_dir).join(&gid);
+    fs::create_dir_all(&temporary_dir).map_err(|e| e.to_string())?;
+    let save_dir = source.map(|url| settings::organized_dir(&settings, url))
+        .unwrap_or_else(|| PathBuf::from(&settings.download_dir));
+    let mut options = json!({
+        "gid": gid,
+        "dir": temporary_dir.display().to_string(),
+        "split": settings.default_connections.to_string(),
+        "max-connection-per-server": settings.default_connections.to_string(),
+    });
+    if !settings.proxy_url.is_empty() {
+        options["all-proxy"] = json!(settings.proxy_url);
+    }
+    Ok((gid, temporary_dir, save_dir, options))
+}
+
+fn record_placement(state: &AppState, gid: &str, temporary_dir: PathBuf, save_dir: PathBuf) -> Result<(), String> {
+    let mut guard = state.placements.lock().map_err(|e| e.to_string())?;
+    guard.insert(gid.to_owned(), Placement {
+        save_dir: save_dir.display().to_string(),
+        temporary_dir: temporary_dir.display().to_string(),
+        moved: false, final_paths: Vec::new(), error: String::new(), moving: false,
+    });
+    placement::persist(&state.placements_path, &guard)
 }
 
 #[tauri::command]
@@ -202,8 +255,12 @@ async fn add_url(state: tauri::State<'_, AppState>, url: String) -> Result<Strin
     if !matches!(parsed.scheme(), "http" | "https" | "magnet") {
         return Err("目前支持 HTTP、HTTPS 和磁力链接".into());
     }
-    let result = rpc(&state, "aria2.addUri", vec![json!([url])]).await?;
-    result.as_str().map(str::to_owned).ok_or("任务创建失败".into())
+    let (gid, temporary_dir, save_dir, options) = task_defaults(&state, Some(url))?;
+    let result = rpc(&state, "aria2.addUri", vec![json!([url]), options]).await?;
+    let actual_gid = result.as_str().ok_or("任务创建失败")?.to_owned();
+    if actual_gid != gid { return Err("下载内核返回了意外的任务编号".into()); }
+    record_placement(&state, &gid, temporary_dir, save_dir)?;
+    Ok(gid)
 }
 
 #[tauri::command]
@@ -218,8 +275,12 @@ async fn add_torrent(state: tauri::State<'_, AppState>, path: String) -> Result<
     }
     let bytes = fs::read(&path).map_err(|e| e.to_string())?;
     let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
-    let result = rpc(&state, "aria2.addTorrent", vec![json!(encoded)]).await?;
-    result.as_str().map(str::to_owned).ok_or("任务创建失败".into())
+    let (gid, temporary_dir, save_dir, options) = task_defaults(&state, None)?;
+    let result = rpc(&state, "aria2.addTorrent", vec![json!(encoded), json!([]), options]).await?;
+    let actual_gid = result.as_str().ok_or("任务创建失败")?.to_owned();
+    if actual_gid != gid { return Err("下载内核返回了意外的任务编号".into()); }
+    record_placement(&state, &gid, temporary_dir, save_dir)?;
+    Ok(gid)
 }
 
 #[tauri::command]
@@ -235,12 +296,103 @@ async fn task_action(state: tauri::State<'_, AppState>, gid: String, action: Str
         _ => return Err("无效的操作".into()),
     };
     rpc(&state, method, vec![json!(gid)]).await?;
+    if action == "clear" {
+        let mut guard = state.placements.lock().map_err(|e| e.to_string())?;
+        guard.remove(&gid);
+        placement::persist(&state.placements_path, &guard)?;
+    }
     Ok(())
 }
 
 #[tauri::command]
-fn set_clipboard_monitoring(state: tauri::State<'_, AppState>, enabled: bool) {
+fn get_settings(state: tauri::State<'_, AppState>) -> Result<Settings, String> {
+    state.settings.lock().map(|settings| settings.clone()).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn save_settings(state: tauri::State<'_, AppState>, next: Settings) -> Result<(), String> {
+    next.validate()?;
+    if endpoint(&state).is_ok() {
+        rpc(&state, "aria2.changeGlobalOption", vec![json!({
+            "max-concurrent-downloads": next.max_concurrent_downloads.to_string()
+        })]).await?;
+    }
+    next.save(&state.settings_path)?;
+    state.clipboard_enabled.store(next.clipboard_monitoring, Ordering::Relaxed);
+    *state.settings.lock().map_err(|e| e.to_string())? = next;
+    Ok(())
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TaskConfig {
+    gid: String,
+    connections: u8,
+    proxy_url: String,
+    save_dir: String,
+    temporary_dir: String,
+}
+
+#[tauri::command]
+async fn get_task_config(state: tauri::State<'_, AppState>, gid: String) -> Result<TaskConfig, String> {
+    validate_gid(&gid)?;
+    let options = rpc(&state, "aria2.getOption", vec![json!(gid)]).await?;
+    let saved = state.placements.lock().map_err(|e| e.to_string())?.get(&gid).cloned();
+    let actual_dir = options.get("dir").and_then(Value::as_str).unwrap_or("").to_owned();
+    Ok(TaskConfig {
+        gid,
+        connections: options.get("split").and_then(Value::as_str).and_then(|v| v.parse().ok()).unwrap_or(1),
+        proxy_url: options.get("all-proxy").and_then(Value::as_str).unwrap_or("").to_owned(),
+        save_dir: saved.as_ref().map(|p| p.save_dir.clone()).unwrap_or_else(|| actual_dir.clone()),
+        temporary_dir: saved.as_ref().map(|p| p.temporary_dir.clone()).unwrap_or(actual_dir),
+    })
+}
+
+#[tauri::command]
+async fn update_task_config(state: tauri::State<'_, AppState>, config: TaskConfig) -> Result<(), String> {
+    validate_gid(&config.gid)?;
+    if !(1..=32).contains(&config.connections) { return Err("连接数应为 1–32".into()); }
+    settings::validate_proxy(&config.proxy_url)?;
+    let save_dir = settings::checked_dir(&config.save_dir)?;
+    let status = rpc(&state, "aria2.tellStatus", vec![json!(config.gid)]).await?;
+    let completed = status.get("status").and_then(Value::as_str) == Some("complete");
+    let options = rpc(&state, "aria2.getOption", vec![json!(config.gid)]).await?;
+    let current_dir = options.get("dir").and_then(Value::as_str).ok_or("无法读取任务临时目录")?;
+    if !completed {
+        rpc(&state, "aria2.changeOption", vec![json!(config.gid), json!({
+            "split": config.connections.to_string(),
+            "max-connection-per-server": config.connections.to_string(),
+            "all-proxy": config.proxy_url,
+        })]).await?;
+    }
+    let mut guard = state.placements.lock().map_err(|e| e.to_string())?;
+    let entry = guard.entry(config.gid).or_insert_with(|| Placement {
+        save_dir: save_dir.display().to_string(),
+        temporary_dir: current_dir.to_owned(),
+        moved: false, final_paths: Vec::new(), error: String::new(), moving: false,
+    });
+    if completed && entry.moved {
+        return Err("文件已搬运完成，不能再修改此任务的保存位置".into());
+    }
+    entry.save_dir = save_dir.display().to_string();
+    entry.error.clear();
+    placement::persist(&state.placements_path, &guard)
+}
+
+fn validate_gid(gid: &str) -> Result<(), String> {
+    if gid.len() != 16 || !gid.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err("无效的任务编号".into());
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn set_clipboard_monitoring(state: tauri::State<'_, AppState>, enabled: bool) -> Result<(), String> {
+    let mut settings = state.settings.lock().map_err(|e| e.to_string())?;
+    settings.clipboard_monitoring = enabled;
+    settings.save(&state.settings_path)?;
     state.clipboard_enabled.store(enabled, Ordering::Relaxed);
+    Ok(())
 }
 
 fn is_download_link(text: &str) -> bool {
@@ -284,9 +436,19 @@ pub fn run() {
         })
         .setup(|app| {
             let handle = app.handle().clone();
+            let data_dir = handle.path().app_data_dir()?;
+            fs::create_dir_all(&data_dir)?;
+            let default_dir = handle.path().download_dir()?;
+            let settings_path = data_dir.join("settings.json");
+            let settings = Settings::load(&settings_path, &default_dir);
+            let placements_path = data_dir.join("placements.json");
             app.manage(AppState {
-                engine: Mutex::new(start_engine(&handle)),
-                clipboard_enabled: AtomicBool::new(false),
+                engine: Mutex::new(start_engine(&handle, &settings)),
+                clipboard_enabled: AtomicBool::new(settings.clipboard_monitoring),
+                settings: Mutex::new(settings),
+                settings_path,
+                placements: placement::load(&placements_path),
+                placements_path,
             });
             watch_clipboard(handle);
             Ok(())
@@ -297,6 +459,10 @@ pub fn run() {
             add_url,
             add_torrent,
             task_action,
+            get_settings,
+            save_settings,
+            get_task_config,
+            update_task_config,
             set_clipboard_monitoring,
         ])
         .run(tauri::generate_context!())
