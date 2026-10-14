@@ -18,6 +18,8 @@ src-tauri/gen/
 *.aria2
 *.torrent
 downloads/
+browser-extension/edge/native-host.json
+output/
 
 # Editors / OS
 .idea/

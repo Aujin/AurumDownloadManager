@@ -250,16 +250,20 @@ fn record_placement(state: &AppState, gid: &str, temporary_dir: PathBuf, save_di
 
 #[tauri::command]
 async fn add_url(state: tauri::State<'_, AppState>, url: String) -> Result<String, String> {
+    add_url_inner(&state, &url).await
+}
+
+async fn add_url_inner(state: &AppState, url: &str) -> Result<String, String> {
     let url = url.trim();
     let parsed = reqwest::Url::parse(url).map_err(|_| "请输入有效的链接")?;
     if !matches!(parsed.scheme(), "http" | "https" | "magnet") {
         return Err("目前支持 HTTP、HTTPS 和磁力链接".into());
     }
-    let (gid, temporary_dir, save_dir, options) = task_defaults(&state, Some(url))?;
-    let result = rpc(&state, "aria2.addUri", vec![json!([url]), options]).await?;
+    let (gid, temporary_dir, save_dir, options) = task_defaults(state, Some(url))?;
+    let result = rpc(state, "aria2.addUri", vec![json!([url]), options]).await?;
     let actual_gid = result.as_str().ok_or("任务创建失败")?.to_owned();
     if actual_gid != gid { return Err("下载内核返回了意外的任务编号".into()); }
-    record_placement(&state, &gid, temporary_dir, save_dir)?;
+    record_placement(state, &gid, temporary_dir, save_dir)?;
     Ok(gid)
 }
 
@@ -422,6 +426,33 @@ fn watch_clipboard(app: tauri::AppHandle) {
     });
 }
 
+fn watch_extension_inbox(app: tauri::AppHandle) {
+    std::thread::spawn(move || {
+        let inbox = match app.path().app_data_dir() {
+            Ok(path) => path.join("extension-inbox"),
+            Err(_) => return,
+        };
+        loop {
+            std::thread::sleep(Duration::from_millis(900));
+            let Ok(entries) = fs::read_dir(&inbox) else { continue };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().and_then(|e| e.to_str()) != Some("json") { continue; }
+                let Some(url) = fs::read(&path).ok()
+                    .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+                    .and_then(|value| value.get("url").and_then(Value::as_str).map(str::to_owned)) else {
+                        let _ = fs::remove_file(path);
+                        continue;
+                    };
+                let state = app.state::<AppState>();
+                if tauri::async_runtime::block_on(add_url_inner(&state, &url)).is_ok() {
+                    let _ = fs::remove_file(path);
+                }
+            }
+        }
+    });
+}
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_clipboard_manager::init())
@@ -451,6 +482,7 @@ pub fn run() {
                 placements_path,
             });
             watch_clipboard(handle);
+            watch_extension_inbox(app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

@@ -15,7 +15,7 @@
 
 进行中或排队中的任务可点击“调整”，即时修改连接数、HTTP 代理以及下载完成后的保存目录。连接数和代理交由 aria2 动态更新，可能短暂重建网络连接。修改保存目录不会搬移仍在传输的半成品；任务完成后才从该任务的临时目录搬运。搬运失败时会显示原因，可更改目标目录并重试。新的全局半成品目录仅影响之后创建的任务。
 
-“浏览器下载接管”目前只保存未来插件的默认偏好，浏览器插件尚未完成，不能通过此设置自动接管浏览器下载。插件设计会让用户自行选择使用浏览器下载或交给 Aurum。
+Edge 插件试用版位于 `browser-extension/edge/`，可在插件弹窗里选择每次询问、交给 Aurum 或使用 Edge 下载。右键链接也可直接交给 Aurum。插件通过 Native Messaging 把链接送到桌面程序；目前尚未完成实际 Edge 侧载验收或商店发布。
 
 aria2 目前是开发环境依赖，尚未随安装包分发。正式发布前需要确定各平台的打包和 GPL-2.0 许可方案。
 
@@ -35,12 +35,22 @@ npm run build
 cargo check --manifest-path src-tauri/Cargo.toml
 ```
 
+## 生成试用文件
+
+在 Windows PowerShell 中从项目根目录运行：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-output.ps1
+```
+
+结果会生成在本地的 `output/`：`edge-extension/` 是可以直接在 Edge 的扩展管理页加载的文件夹，`windows/` 包含桌面程序和本机通信组件；两个 ZIP 便于复制。具体加载和注册步骤见生成的 `output/README.md`。插件无需额外编译，构建脚本会把源文件复制到输出目录。
+
 如果 aria2 尚未安装，界面会显示下载内核未连接，添加任务按钮不可用。
 
 ## 接下来
 
 1. 完善种子内文件选择、限速和下载队列。
-2. 为 Chrome、Edge、Firefox 开发浏览器插件，通过 Native Messaging 与桌面端通信。
+2. 完成 Edge 插件的实际侧载验收，并适配 Chrome、Firefox。
 3. 完成 Windows 安装包与真实下载测试，再验证 macOS、Linux。
 4. 单独适配 Safari，并评估移动端后台下载限制。
 
