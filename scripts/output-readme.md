@@ -15,6 +15,7 @@
 ## Edge 试用步骤
 
 1. 解压后直接启动 `windows/aurum-download-manager.exe`。请把 `aria2c.exe` 与主程序保留在同一文件夹，无需单独安装 aria2。Windows 仍需要系统的 WebView2 运行环境。
+   如需开机启动，在程序的“设置 → 常规”中点击“启用开机启动”。确认 Windows 管理员权限后，程序会把便携版文件复制到 `Program Files\Aurum Download Manager`，并为当前用户设置登录启动。此后原解压目录可以移走。点击“取消开机启动”只移除登录启动项，不删除 Program Files 中的文件。
 2. 在 Edge 打开 `edge://extensions`，开启“开发人员模式”，点击“加载解压缩的扩展”，选择本目录下的 `edge-extension` 文件夹。
 3. 在插件卡片上复制 32 位 ID。在 PowerShell 中执行：
 
@@ -24,7 +25,7 @@
 
 4. 重新加载插件。在工具栏的 Aurum 图标中选择“每次询问”、“交给 Aurum”或“使用 Edge 自身下载”。右键链接也可以直接选择“使用 Aurum 下载链接”。
 
-插件使用 Edge Native Messaging，注册脚本只写入当前用户的 `HKCU\Software\Microsoft\Edge\NativeMessagingHosts` 项。若以后移动 `windows` 文件夹，请重新运行注册脚本。下载器关闭时，插件发送的链接会排队，待下载器再次启动后创建任务。
+插件使用 Edge Native Messaging，注册脚本只写入当前用户的 `HKCU\Software\Microsoft\Edge\NativeMessagingHosts` 项。启用开机启动时，现有 Edge 桥接配置会指向 Program Files 中的副本。若手动移动 `windows` 文件夹且没有启用开机启动，请重新运行注册脚本。下载器关闭时，插件发送的链接会排队，待下载器再次启动后创建任务。
 
 这是开发试用构建，尚未发布到 Edge 商店。小文件下载可能在“每次询问”暂停前就已完成；如果不希望插件处理下载，请在插件弹窗选择“使用 Edge 自身下载”。
 

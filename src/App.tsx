@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
-import { SettingsPanel, TaskConfigPanel, type Settings, type TaskConfig } from "./settings";
+import { SettingsPanel, TaskConfigPanel, type Settings, type StartupStatus, type TaskConfig } from "./settings";
 
 type TaskStatus = "active" | "waiting" | "paused" | "complete" | "error" | "removed";
 type Task = {
@@ -50,6 +50,7 @@ export default function App() {
   const [clipboardCandidate, setClipboardCandidate] = useState("");
   const [settings, setSettings] = useState<Settings | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [startup, setStartup] = useState<StartupStatus | null>(null);
   const [taskConfig, setTaskConfig] = useState<TaskConfig | null>(null);
   const [taskConfigIsTorrent, setTaskConfigIsTorrent] = useState(false);
 
@@ -69,6 +70,8 @@ export default function App() {
     void invoke<Settings>("get_settings").then((value) => {
       if (alive) { setSettings(value); setClipboardEnabled(value.clipboardMonitoring); }
     }).catch((error) => { if (alive) setNotice(String(error)); });
+    void invoke<StartupStatus>("get_startup_status").then((value) => { if (alive) setStartup(value); })
+      .catch((error) => { if (alive) setNotice(String(error)); });
     const interval = window.setInterval(tick, 2000);
     const unlisten = listen<string>("clipboard-link", ({ payload }) => setClipboardCandidate(payload));
     return () => { alive = false; window.clearInterval(interval); void unlisten.then((stop) => stop()); };
@@ -79,6 +82,12 @@ export default function App() {
     setSettings(next);
     setClipboardEnabled(next.clipboardMonitoring);
     await refresh();
+  }
+
+  async function changeStartup(enabled: boolean) {
+    const next = await invoke<StartupStatus>("set_startup_enabled", { enabled });
+    setStartup(next);
+    return next;
   }
 
   async function openTaskConfig(task: Task) {
@@ -167,7 +176,7 @@ export default function App() {
         })}</div>}
       </section>
     </main>
-    {settingsOpen && settings && <SettingsPanel initial={settings} onSave={saveSettings} onClose={() => setSettingsOpen(false)} />}
+    {settingsOpen && settings && <SettingsPanel initial={settings} startup={startup} onStartupChange={changeStartup} onSave={saveSettings} onClose={() => setSettingsOpen(false)} />}
     {taskConfig && <TaskConfigPanel initial={taskConfig} isTorrent={taskConfigIsTorrent} onSave={saveTaskConfig} onClose={() => setTaskConfig(null)} />}
   </div>;
 }

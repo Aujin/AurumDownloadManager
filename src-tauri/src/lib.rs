@@ -1,5 +1,6 @@
 mod placement;
 mod settings;
+mod startup;
 
 use base64::Engine as _;
 use placement::{Placement, Placements};
@@ -458,6 +459,9 @@ fn watch_extension_inbox(app: tauri::AppHandle) {
 }
 
 pub fn run() {
+    if startup::run_copy_helper() {
+        return;
+    }
     tauri::Builder::default()
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_dialog::init())
@@ -500,6 +504,8 @@ pub fn run() {
             get_task_config,
             update_task_config,
             set_clipboard_monitoring,
+            startup::get_startup_status,
+            startup::set_startup_enabled,
         ])
         .run(tauri::generate_context!())
         .expect("failed to run Aurum Download Manager");
