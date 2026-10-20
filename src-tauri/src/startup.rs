@@ -12,6 +12,7 @@ pub struct StartupStatus {
 #[cfg(windows)]
 mod windows {
     use super::StartupStatus;
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
     use std::{
         env, fs,
         path::{Path, PathBuf},
@@ -32,6 +33,7 @@ mod windows {
         "install-edge-bridge.ps1",
         "README.md",
     ];
+    const EDGE_EXTENSION_FILES: &[&str] = &["manifest.json", "background.js", "popup.html", "popup.js", "icon128.png"];
 
     fn install_dir() -> Result<PathBuf, String> {
         let program_files = env::var_os("ProgramFiles").ok_or("无法找到 Program Files 目录")?;
@@ -87,6 +89,19 @@ mod windows {
             if from.is_file() {
                 fs::copy(&from, destination.join(name))
                     .map_err(|e| format!("无法复制 {name}：{e}"))?;
+            }
+        }
+        let extension = source.join("edge-extension");
+        if extension.is_dir() {
+            let destination_extension = destination.join("edge-extension");
+            fs::create_dir_all(&destination_extension)
+                .map_err(|e| format!("无法创建 Edge 插件目录：{e}"))?;
+            for name in EDGE_EXTENSION_FILES {
+                let from = extension.join(name);
+                if from.is_file() {
+                    fs::copy(&from, destination_extension.join(name))
+                        .map_err(|e| format!("无法复制 Edge 插件文件 {name}：{e}"))?;
+                }
             }
         }
         fs::copy(
@@ -188,6 +203,34 @@ mod windows {
         Ok(status)
     }
 
+    pub fn create_desktop_shortcut() -> Result<String, String> {
+        let target = if status()?.enabled {
+            installed_exe()?
+        } else {
+            env::current_exe().map_err(|e| format!("无法定位当前程序：{e}"))?
+        };
+        if !target.is_file() {
+            return Err(format!("快捷方式目标不存在：{}", target.display()));
+        }
+        let script = "$ErrorActionPreference = 'Stop'; $desktop = [Environment]::GetFolderPath('DesktopDirectory'); if (-not $desktop) { throw '无法定位桌面目录' }; $link = Join-Path $desktop 'Aurum Download Manager.lnk'; $shell = New-Object -ComObject WScript.Shell; $shortcut = $shell.CreateShortcut($link); $shortcut.TargetPath = $env:ADM_SHORTCUT_TARGET; $shortcut.WorkingDirectory = Split-Path -Parent $env:ADM_SHORTCUT_TARGET; $shortcut.IconLocation = $env:ADM_SHORTCUT_TARGET + ',0'; $shortcut.Description = 'Aurum Download Manager'; $shortcut.Save(); if (-not (Test-Path -LiteralPath $link)) { throw '快捷方式保存失败' }; [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($link))";
+        let mut command = Command::new("powershell.exe");
+        command.args(["-NoProfile", "-NonInteractive", "-Command", script])
+            .env("ADM_SHORTCUT_TARGET", &target);
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x08000000);
+        let result = command.output().map_err(|e| format!("无法创建桌面快捷方式：{e}"))?;
+        if !result.status.success() {
+            return Err(format!("无法创建桌面快捷方式：{}", String::from_utf8_lossy(&result.stderr).trim()));
+        }
+        let encoded = String::from_utf8_lossy(&result.stdout);
+        let path = STANDARD.decode(encoded.trim()).map_err(|e| e.to_string())?;
+        let path = String::from_utf8(path).map_err(|e| e.to_string())?;
+        if !Path::new(&path).is_file() {
+            return Err("快捷方式创建后未能在桌面找到".into());
+        }
+        Ok(path)
+    }
+
     pub fn run_copy_helper() -> bool {
         if env::args_os().nth(1).as_deref() != Some(std::ffi::OsStr::new(HELPER_ARG)) {
             return false;
@@ -239,5 +282,19 @@ pub async fn set_startup_enabled(enabled: bool) -> Result<StartupStatus, String>
     {
         let _ = enabled;
         Err("此平台暂不支持开机启动".into())
+    }
+}
+
+#[tauri::command]
+pub async fn create_desktop_shortcut() -> Result<String, String> {
+    #[cfg(windows)]
+    {
+        tauri::async_runtime::spawn_blocking(windows::create_desktop_shortcut)
+            .await
+            .map_err(|e| e.to_string())?
+    }
+    #[cfg(not(windows))]
+    {
+        Err("此平台暂不支持创建桌面快捷方式".into())
     }
 }

@@ -19,7 +19,7 @@ use std::{
     sync::{atomic::{AtomicBool, Ordering}, Mutex},
     time::Duration,
 };
-use tauri::{Emitter, Manager};
+use tauri::{menu::{Menu, MenuItem}, tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent}, Emitter, Manager};
 use tauri_plugin_clipboard_manager::ClipboardExt;
 
 struct Engine {
@@ -510,14 +510,47 @@ pub fn run() {
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_dialog::init())
         .on_window_event(|window, event| {
-            if matches!(event, tauri::WindowEvent::CloseRequested { .. }) {
-                let state = window.state::<AppState>();
-                if let Ok(mut engine) = state.engine.lock() {
-                    engine.shutdown();
-                };
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                let _ = window.hide();
             }
         })
         .setup(|app| {
+            let show = MenuItem::with_id(app, "show", "显示主窗口", true, None::<&str>)?;
+            let quit = MenuItem::with_id(app, "quit", "退出 Aurum", true, None::<&str>)?;
+            let menu = Menu::with_items(app, &[&show, &quit])?;
+            let mut tray = TrayIconBuilder::new()
+                .menu(&menu)
+                .tooltip("Aurum Download Manager")
+                .show_menu_on_left_click(false)
+                .on_menu_event(|app, event| match event.id().as_ref() {
+                    "show" => {
+                        if let Some(window) = app.get_webview_window("main") {
+                            let _ = window.show();
+                            let _ = window.set_focus();
+                        }
+                    }
+                    "quit" => {
+                        let state = app.state::<AppState>();
+                        if let Ok(mut engine) = state.engine.lock() { engine.shutdown(); }
+                        app.exit(0);
+                    }
+                    _ => {}
+                })
+                .on_tray_icon_event(|tray, event| {
+                    let restore = matches!(event,
+                        TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. }
+                        | TrayIconEvent::DoubleClick { button: MouseButton::Left, .. }
+                    );
+                    if restore {
+                        if let Some(window) = tray.app_handle().get_webview_window("main") {
+                            let _ = window.show();
+                            let _ = window.set_focus();
+                        }
+                    }
+                });
+            if let Some(icon) = app.default_window_icon() { tray = tray.icon(icon.clone()); }
+            tray.build(app)?;
             let handle = app.handle().clone();
             let data_dir = handle.path().app_data_dir()?;
             fs::create_dir_all(&data_dir)?;
@@ -551,6 +584,7 @@ pub fn run() {
             set_clipboard_monitoring,
             startup::get_startup_status,
             startup::set_startup_enabled,
+            startup::create_desktop_shortcut,
         ])
         .run(tauri::generate_context!())
         .expect("failed to run Aurum Download Manager");

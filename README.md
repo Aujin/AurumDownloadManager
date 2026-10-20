@@ -21,6 +21,8 @@ Edge 插件试用版位于 `browser-extension/edge/`，可在插件弹窗里选�
 
 Windows 便携版把 aria2 1.37.0、许可文本和对应源码一同放在 `output/windows/`。桌面程序优先使用同目录的 `aria2c.exe`，无需单独安装。macOS、Linux 的可分发包仍待制作。
 
+关闭主窗口时程序会留在系统托盘继续下载，通过托盘菜单退出。在 Windows 的“设置 → 常规”中可创建桌面快捷方式；若已启用开机启动，快捷方式指向 Program Files 中的副本，否则指向当前便携版 EXE。
+
 ## 本地开发
 
 需要 Node.js、Rust MSVC 工具链、Tauri 的系统依赖以及 `aria2c`。安装 aria2 后请确保它位于 `PATH`，也可通过 `ADM_ARIA2_PATH` 指定其完整路径。
