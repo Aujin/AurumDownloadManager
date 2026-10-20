@@ -45,7 +45,7 @@ cargo check --manifest-path src-tauri/Cargo.toml
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-output.ps1
 ```
 
-结果会生成在本地的 `output/`：`edge-extension/` 是可以直接在 Edge 的扩展管理页加载的文件夹，`windows/` 包含桌面程序、本机通信组件和 aria2；两个 ZIP 便于复制。具体加载和注册步骤见生成的 `output/README.md`。插件无需额外编译，构建脚本会把源文件复制到输出目录。
+结果会生成在本地的 `output/`：`edge-extension/` 是可以直接在 Edge 的扩展管理页加载的文件夹，`windows/` 包含桌面程序、本机通信组件、aria2 和 `edge-extension/` 插件文件夹。`aurum-windows-portable.zip` 包含全部 Windows 试用文件及插件；另有单独的插件 ZIP。具体加载和注册步骤见生成的 `output/README.md`。插件无需额外编译，构建脚本会把源文件复制到输出目录。
 
 开发环境若没有安装 aria2，界面会显示下载内核未连接；便携版使用随包提供的 aria2。
 
