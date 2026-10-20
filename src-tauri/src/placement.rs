@@ -14,6 +14,10 @@ pub struct Placement {
     pub error: String,
     #[serde(skip)]
     pub moving: bool,
+    #[serde(default)]
+    pub connections: u8,
+    #[serde(default)]
+    pub probe: Option<crate::probe::ProbeResult>,
 }
 
 pub type Placements = Arc<Mutex<HashMap<String, Placement>>>;
@@ -41,6 +45,8 @@ pub fn decorate_and_finalize(task: &mut Value, placements: &Placements, path: &P
         object.insert("moving".into(), Value::Bool(placement.moving));
         object.insert("moveError".into(), Value::String(placement.error.clone()));
         object.insert("finalPaths".into(), serde_json::to_value(&placement.final_paths).unwrap_or(Value::Null));
+        if placement.connections > 0 { object.insert("configuredConnections".into(), Value::from(placement.connections)); }
+        if let Some(probe) = &placement.probe { object.insert("probe".into(), serde_json::to_value(probe).unwrap_or(Value::Null)); }
     }
     if !completed || placement.moved || placement.moving || !placement.error.is_empty() { return; }
     placement.moving = true;

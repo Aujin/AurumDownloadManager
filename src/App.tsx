@@ -19,6 +19,10 @@ type Task = {
   moving?: boolean;
   moveError?: string;
   finalPaths?: string[];
+  connections?: string;
+  configuredConnections?: number;
+  infoHash?: string;
+  probe?: { resume: string; singleConnectionLimit: string; note: string };
 };
 type EngineInfo = { ready: boolean; message: string; downloadDir: string; temporaryDir: string };
 type Filter = "all" | "active" | "completed";
@@ -49,6 +53,8 @@ export default function App() {
   const [clipboardEnabled, setClipboardEnabled] = useState(false);
   const [clipboardCandidate, setClipboardCandidate] = useState("");
   const [settings, setSettings] = useState<Settings | null>(null);
+  const [newConnections, setNewConnections] = useState(8);
+  const [changingConnections, setChangingConnections] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [startup, setStartup] = useState<StartupStatus | null>(null);
   const [taskConfig, setTaskConfig] = useState<TaskConfig | null>(null);
@@ -68,7 +74,7 @@ export default function App() {
     };
     void tick();
     void invoke<Settings>("get_settings").then((value) => {
-      if (alive) { setSettings(value); setClipboardEnabled(value.clipboardMonitoring); }
+      if (alive) { setSettings(value); setNewConnections(value.defaultConnections); setClipboardEnabled(value.clipboardMonitoring); }
     }).catch((error) => { if (alive) setNotice(String(error)); });
     void invoke<StartupStatus>("get_startup_status").then((value) => { if (alive) setStartup(value); })
       .catch((error) => { if (alive) setNotice(String(error)); });
@@ -80,6 +86,7 @@ export default function App() {
   async function saveSettings(next: Settings) {
     await invoke("save_settings", { next });
     setSettings(next);
+    setNewConnections(next.defaultConnections);
     setClipboardEnabled(next.clipboardMonitoring);
     await refresh();
   }
@@ -108,11 +115,18 @@ export default function App() {
     if (!candidate) return;
     setBusy(true); setNotice("");
     try {
-      await invoke("add_url", { url: candidate });
+      await invoke("add_url", { url: candidate, connections: newConnections });
       setUrl(""); setClipboardCandidate("");
       await refresh();
     } catch (error) { setNotice(String(error)); }
     finally { setBusy(false); }
+  }
+
+  async function changeTaskConnections(task: Task, connections: number) {
+    setChangingConnections(task.gid); setNotice("");
+    try { await invoke("set_task_connections", { gid: task.gid, connections }); await refresh(); }
+    catch (error) { setNotice(String(error)); }
+    finally { setChangingConnections(""); }
   }
 
   async function chooseTorrent() {
@@ -162,6 +176,7 @@ export default function App() {
       <section className="add-panel">
         <div className="add-panel-header"><div><h2>添加新任务</h2><p>粘贴 HTTP、HTTPS 或 magnet 链接</p></div><button className="secondary-button" onClick={chooseTorrent} disabled={!engine.ready || busy}>选择 .torrent 文件</button></div>
         <form onSubmit={(event) => { event.preventDefault(); void submitUrl(); }} className="url-form"><input aria-label="下载链接" placeholder="https://example.com/file.zip 或 magnet:?xt=…" value={url} onChange={(event) => setUrl(event.target.value)} /><button type="submit" disabled={!engine.ready || busy || !url.trim()}>开始下载</button></form>
+        <div className="new-connections"><label htmlFor="new-connections">新任务分段连接数</label><select id="new-connections" value={newConnections} onChange={(event) => setNewConnections(Number(event.target.value))}>{Array.from({ length: 32 }, (_, i) => <option key={i + 1} value={i + 1}>{i + 1}</option>)}</select><small>适用于 HTTP(S)。分段写入同一个文件；实际连接数取决于文件大小和服务器支持。</small></div>
         <div className="add-footer"><span>保存：{engine.downloadDir || "系统下载文件夹"}<br />半成品：{engine.temporaryDir || "未设置"}</span><label className="clipboard-control"><input type="checkbox" checked={clipboardEnabled} onChange={toggleClipboard} />监听剪切板</label></div>
       </section>
       {clipboardCandidate && <div className="clipboard-banner"><div><strong>剪切板中发现下载链接</strong><p>{clipboardCandidate}</p></div><div><button onClick={() => void submitUrl(clipboardCandidate)}>添加任务</button><button className="text-button" onClick={() => setClipboardCandidate("")}>忽略</button></div></div>}
@@ -172,7 +187,7 @@ export default function App() {
           const total = Number(task.totalLength || 0);
           const done = Number(task.completedLength || 0);
           const percent = total > 0 ? Math.min(100, Math.round(done / total * 100)) : 0;
-          return <article className="task-card" key={task.gid}><div className="file-icon">{task.bittorrent ? "BT" : "↓"}</div><div className="task-detail"><div className="task-head"><strong title={taskName(task)}>{taskName(task)}</strong><span className={`task-status ${task.status}`}>{task.moving ? "搬运中" : labels[task.status]}</span></div><div className="task-meta"><span>{formatSize(done)} / {total ? formatSize(total) : "未知大小"}</span><span>{task.status === "active" ? formatSize(task.downloadSpeed, true) : `${percent}%`}</span></div><div className="progress-track"><div style={{ width: `${percent}%` }} /></div>{task.saveDir && <p className="task-path">完成后保存至：{task.saveDir}</p>}{task.moveError && <p className="task-error">{task.moveError}</p>}{task.errorMessage && <p className="task-error">{task.errorMessage}</p>}</div><div className="task-actions">{(["waiting", "active", "paused"].includes(task.status) || !!task.moveError) && <button onClick={() => void openTaskConfig(task)}>{task.moveError ? "调整并重试" : "调整"}</button>}{task.status === "active" && <button onClick={() => void act(task, "pause")}>暂停</button>}{task.status === "paused" && <button onClick={() => void act(task, "resume")}>继续</button>}{["waiting", "active", "paused"].includes(task.status) ? <button onClick={() => void act(task, "remove")}>移除</button> : <button onClick={() => void act(task, "clear")}>清除记录</button>}</div></article>;
+          return <article className="task-card" key={task.gid}><div className="file-icon">{task.bittorrent ? "BT" : "↓"}</div><div className="task-detail"><div className="task-head"><strong title={taskName(task)}>{taskName(task)}</strong><span className={`task-status ${task.status}`}>{task.moving ? "搬运中" : labels[task.status]}</span></div><div className="task-meta"><span>{formatSize(done)} / {total ? formatSize(total) : "未知大小"}</span><span>{task.status === "active" ? formatSize(task.downloadSpeed, true) : `${percent}%`}</span></div><div className="progress-track"><div style={{ width: `${percent}%` }} /></div>{task.saveDir && <p className="task-path">完成后保存至：{task.saveDir}</p>}{task.probe && <p className="task-probe">续传：{task.probe.resume === "supported" ? "支持 Range，可尝试续传" : task.probe.resume === "unsupported" ? "服务器不支持 Range" : task.probe.resume === "checking" ? "检测中" : "无法确认"}　单连接限速：{task.probe.singleConnectionLimit === "suspected" ? "疑似存在" : task.probe.singleConnectionLimit === "not_observed" ? "未发现明显限制" : task.probe.singleConnectionLimit === "checking" ? "检测中" : "无法判断"}<span title={task.probe.note}>{task.probe.note && ` · ${task.probe.note}`}</span></p>}{task.errorMessage && <p className="task-error">{task.errorMessage}</p>}{task.moveError && <p className="task-error">{task.moveError}</p>}</div><div className="task-actions">{["active", "waiting", "paused"].includes(task.status) && !task.bittorrent && !task.infoHash && <label className="task-connections">连接数<select aria-label={`${taskName(task)} 分段连接数`} value={task.configuredConnections || settings?.defaultConnections || 8} disabled={changingConnections === task.gid} onChange={(event) => void changeTaskConnections(task, Number(event.target.value))}>{Array.from({ length: 32 }, (_, i) => <option key={i + 1} value={i + 1}>{i + 1}</option>)}</select><small>当前 {task.connections || "0"}</small></label>}{(["waiting", "active", "paused"].includes(task.status) || !!task.moveError) && <button onClick={() => void openTaskConfig(task)}>{task.moveError ? "调整并重试" : "调整"}</button>}{task.status === "active" && <button onClick={() => void act(task, "pause")}>暂停</button>}{task.status === "paused" && <button onClick={() => void act(task, "resume")}>继续</button>}{["waiting", "active", "paused"].includes(task.status) ? <button onClick={() => void act(task, "remove")}>移除</button> : <button onClick={() => void act(task, "clear")}>清除记录</button>}</div></article>;
         })}</div>}
       </section>
     </main>

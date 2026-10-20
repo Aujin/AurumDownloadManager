@@ -1,4 +1,5 @@
 mod placement;
+mod probe;
 mod settings;
 mod startup;
 
@@ -224,8 +225,10 @@ fn new_gid() -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
-fn task_defaults(state: &AppState, source: Option<&str>) -> Result<(String, PathBuf, PathBuf, Value), String> {
+fn task_defaults(state: &AppState, source: Option<&str>, requested_connections: Option<u8>) -> Result<(String, PathBuf, PathBuf, Value, u8), String> {
     let settings = state.settings.lock().map_err(|e| e.to_string())?.clone();
+    let connections = requested_connections.unwrap_or(settings.default_connections);
+    if !(1..=32).contains(&connections) { return Err("连接数应为 1–32".into()); }
     let gid = new_gid();
     let temporary_dir = PathBuf::from(&settings.temporary_dir).join(&gid);
     fs::create_dir_all(&temporary_dir).map_err(|e| e.to_string())?;
@@ -234,41 +237,58 @@ fn task_defaults(state: &AppState, source: Option<&str>) -> Result<(String, Path
     let mut options = json!({
         "gid": gid,
         "dir": temporary_dir.display().to_string(),
-        "split": settings.default_connections.to_string(),
-        "max-connection-per-server": settings.default_connections.to_string(),
+        "split": connections.to_string(),
+        "max-connection-per-server": connections.to_string(),
+        "min-split-size": "1M",
     });
     if !settings.proxy_url.is_empty() {
         options["all-proxy"] = json!(settings.proxy_url);
     }
-    Ok((gid, temporary_dir, save_dir, options))
+    Ok((gid, temporary_dir, save_dir, options, connections))
 }
 
-fn record_placement(state: &AppState, gid: &str, temporary_dir: PathBuf, save_dir: PathBuf) -> Result<(), String> {
+fn record_placement(state: &AppState, gid: &str, temporary_dir: PathBuf, save_dir: PathBuf, connections: u8, probe: Option<probe::ProbeResult>) -> Result<(), String> {
     let mut guard = state.placements.lock().map_err(|e| e.to_string())?;
     guard.insert(gid.to_owned(), Placement {
         save_dir: save_dir.display().to_string(),
         temporary_dir: temporary_dir.display().to_string(),
         moved: false, final_paths: Vec::new(), error: String::new(), moving: false,
+        connections, probe,
     });
     placement::persist(&state.placements_path, &guard)
 }
 
 #[tauri::command]
-async fn add_url(state: tauri::State<'_, AppState>, url: String) -> Result<String, String> {
-    add_url_inner(&state, &url).await
+async fn add_url(state: tauri::State<'_, AppState>, url: String, connections: Option<u8>) -> Result<String, String> {
+    add_url_inner(&state, &url, connections).await
 }
 
-async fn add_url_inner(state: &AppState, url: &str) -> Result<String, String> {
+async fn add_url_inner(state: &AppState, url: &str, connections: Option<u8>) -> Result<String, String> {
     let url = url.trim();
     let parsed = reqwest::Url::parse(url).map_err(|_| "请输入有效的链接")?;
     if !matches!(parsed.scheme(), "http" | "https" | "magnet") {
         return Err("目前支持 HTTP、HTTPS 和磁力链接".into());
     }
-    let (gid, temporary_dir, save_dir, options) = task_defaults(state, Some(url))?;
+    let is_http = matches!(parsed.scheme(), "http" | "https");
+    let proxy_url = state.settings.lock().map_err(|e| e.to_string())?.proxy_url.clone();
+    let (gid, temporary_dir, save_dir, options, connections) = task_defaults(state, Some(url), if is_http { connections } else { None })?;
     let result = rpc(state, "aria2.addUri", vec![json!([url]), options]).await?;
     let actual_gid = result.as_str().ok_or("任务创建失败")?.to_owned();
     if actual_gid != gid { return Err("下载内核返回了意外的任务编号".into()); }
-    record_placement(state, &gid, temporary_dir, save_dir)?;
+    record_placement(state, &gid, temporary_dir, save_dir, connections, is_http.then(probe::ProbeResult::checking))?;
+    if is_http {
+        let placements = state.placements.clone();
+        let path = state.placements_path.clone();
+        let gid_for_probe = gid.clone();
+        let url_for_probe = url.to_owned();
+        tauri::async_runtime::spawn(async move {
+            let result = probe::inspect(&url_for_probe, &proxy_url).await;
+            if let Ok(mut guard) = placements.lock() {
+                if let Some(entry) = guard.get_mut(&gid_for_probe) { entry.probe = Some(result); }
+                let _ = placement::persist(&path, &guard);
+            }
+        });
+    }
     Ok(gid)
 }
 
@@ -284,11 +304,11 @@ async fn add_torrent(state: tauri::State<'_, AppState>, path: String) -> Result<
     }
     let bytes = fs::read(&path).map_err(|e| e.to_string())?;
     let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
-    let (gid, temporary_dir, save_dir, options) = task_defaults(&state, None)?;
+    let (gid, temporary_dir, save_dir, options, connections) = task_defaults(&state, None, None)?;
     let result = rpc(&state, "aria2.addTorrent", vec![json!(encoded), json!([]), options]).await?;
     let actual_gid = result.as_str().ok_or("任务创建失败")?.to_owned();
     if actual_gid != gid { return Err("下载内核返回了意外的任务编号".into()); }
-    record_placement(&state, &gid, temporary_dir, save_dir)?;
+    record_placement(&state, &gid, temporary_dir, save_dir, connections, None)?;
     Ok(gid)
 }
 
@@ -371,6 +391,7 @@ async fn update_task_config(state: tauri::State<'_, AppState>, config: TaskConfi
         rpc(&state, "aria2.changeOption", vec![json!(config.gid), json!({
             "split": config.connections.to_string(),
             "max-connection-per-server": config.connections.to_string(),
+            "min-split-size": "1M",
             "all-proxy": config.proxy_url,
         })]).await?;
     }
@@ -379,12 +400,35 @@ async fn update_task_config(state: tauri::State<'_, AppState>, config: TaskConfi
         save_dir: save_dir.display().to_string(),
         temporary_dir: current_dir.to_owned(),
         moved: false, final_paths: Vec::new(), error: String::new(), moving: false,
+        connections: config.connections, probe: None,
     });
     if completed && entry.moved {
         return Err("文件已搬运完成，不能再修改此任务的保存位置".into());
     }
     entry.save_dir = save_dir.display().to_string();
+    entry.connections = config.connections;
     entry.error.clear();
+    placement::persist(&state.placements_path, &guard)
+}
+
+#[tauri::command]
+async fn set_task_connections(state: tauri::State<'_, AppState>, gid: String, connections: u8) -> Result<(), String> {
+    validate_gid(&gid)?;
+    if !(1..=32).contains(&connections) { return Err("连接数应为 1–32".into()); }
+    let status = rpc(&state, "aria2.tellStatus", vec![json!(gid)]).await?;
+    if !matches!(status.get("status").and_then(Value::as_str), Some("active" | "waiting" | "paused")) {
+        return Err("只有进行中或暂停的任务可以调整连接数".into());
+    }
+    if status.get("bittorrent").is_some() || status.get("infoHash").is_some() {
+        return Err("分段连接数仅适用于 HTTP(S) 下载".into());
+    }
+    rpc(&state, "aria2.changeOption", vec![json!(gid), json!({
+        "split": connections.to_string(),
+        "max-connection-per-server": connections.to_string(),
+        "min-split-size": "1M",
+    })]).await?;
+    let mut guard = state.placements.lock().map_err(|e| e.to_string())?;
+    if let Some(entry) = guard.get_mut(&gid) { entry.connections = connections; }
     placement::persist(&state.placements_path, &guard)
 }
 
@@ -450,7 +494,7 @@ fn watch_extension_inbox(app: tauri::AppHandle) {
                         continue;
                     };
                 let state = app.state::<AppState>();
-                if tauri::async_runtime::block_on(add_url_inner(&state, &url)).is_ok() {
+                if tauri::async_runtime::block_on(add_url_inner(&state, &url, None)).is_ok() {
                     let _ = fs::remove_file(path);
                 }
             }
@@ -503,6 +547,7 @@ pub fn run() {
             save_settings,
             get_task_config,
             update_task_config,
+            set_task_connections,
             set_clipboard_monitoring,
             startup::get_startup_status,
             startup::set_startup_enabled,

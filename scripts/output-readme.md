@@ -16,6 +16,7 @@
 
 1. 解压后直接启动 `windows/aurum-download-manager.exe`。请把 `aria2c.exe` 与主程序保留在同一文件夹，无需单独安装 aria2。Windows 仍需要系统的 WebView2 运行环境。
    如需开机启动，在程序的“设置 → 常规”中点击“启用开机启动”。确认 Windows 管理员权限后，程序会把便携版文件复制到 `Program Files\Aurum Download Manager`，并为当前用户设置登录启动。此后原解压目录可以移走。点击“取消开机启动”只移除登录启动项，不删除 Program Files 中的文件。
+   主界面可以选择新任务的 HTTP(S) 分段连接数；下载中的任务可直接在任务卡片修改。任务卡片还会显示实际连接数、服务器的分段续传支持情况和单连接限速的抽样提示。小文件或不支持 Range 的服务器可能无法使用多条连接。
 2. 在 Edge 打开 `edge://extensions`，开启“开发人员模式”，点击“加载解压缩的扩展”，选择本目录下的 `edge-extension` 文件夹。
 3. 在插件卡片上复制 32 位 ID。在 PowerShell 中执行：
 
