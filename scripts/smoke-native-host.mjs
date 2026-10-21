@@ -23,8 +23,10 @@ async function call(message) {
 }
 
 try {
-  const settings = await call({ type: "settings" });
+  const settings = await call({ type: "settings", browser: "edge" });
   if (!settings.ok || settings.mode !== "ask") throw Error("Default mode was not returned");
+  const seen = JSON.parse(await readFile(join(temporaryAppData, "com.aujin.aurumdownloadmanager", "browser-edge-seen.json"), "utf8"));
+  if (!Number.isInteger(seen.at) || seen.at < 1) throw Error("Browser connection timestamp missing");
   const url = "https://example.com/sample.zip";
   const queued = await call({ type: "enqueue", url });
   if (!queued.ok) throw Error(`Enqueue failed: ${queued.error}`);

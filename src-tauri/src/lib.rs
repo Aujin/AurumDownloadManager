@@ -593,6 +593,8 @@ pub fn run() {
             startup::create_desktop_shortcut,
             edge_bridge::get_edge_bridge_status,
             edge_bridge::repair_edge_bridge,
+            edge_bridge::allow_edge_extension,
+            edge_bridge::open_browser_install_page,
         ])
         .run(tauri::generate_context!())
         .expect("failed to run Aurum Download Manager");

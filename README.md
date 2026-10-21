@@ -17,9 +17,9 @@
 
 进行中或排队中的任务可点击“调整”，即时修改连接数、HTTP 代理以及下载完成后的保存目录。连接数和代理交由 aria2 动态更新，可能短暂重建网络连接。修改保存目录不会搬移仍在传输的半成品；任务完成后才从该任务的临时目录搬运。搬运失败时会显示原因，可更改目标目录并重试。新的全局半成品目录仅影响之后创建的任务。
 
-Edge 插件试用版位于 `browser-extension/edge/`，可在插件弹窗里选择每次询问、交给 Aurum 或使用 Edge 下载。右键链接也可直接交给 Aurum。插件通过 Native Messaging 把链接送到桌面程序；目前尚未完成实际 Edge 侧载验收或商店发布。
+Edge 和 Chrome 插件试用版共用 `browser-extension/edge/`，可在插件弹窗里选择每次询问、交给 Aurum 或使用浏览器下载。右键链接也可直接交给 Aurum。插件通过 Native Messaging 把链接送到桌面程序；目前尚未完成商店发布。
 
-Windows 版启动时会自动注册 Edge Native Messaging 并将插件文件同步到固定的用户目录。插件 0.1.1 使用固定 ID；从旧版迁移时需移除重复插件并从“设置 → 浏览器”显示的固定目录加载一次。后续更新只需在 Edge 扩展页重新加载原插件。
+Windows 版启动时会自动注册 Edge 和 Chrome Native Messaging，并将插件文件同步到固定的用户目录。插件 0.1.2 使用固定 ID；从旧版迁移可在“设置 → 浏览器”授权旧插件 ID，或从固定目录加载新版并移除重复项。后续更新只需在扩展页重新加载原插件。设置页可打开浏览器扩展页并检查最近连接时间。
 
 Windows 便携版把 aria2 1.37.0、许可文本和对应源码一同放在 `output/windows/`。桌面程序优先使用同目录的 `aria2c.exe`，无需单独安装。macOS、Linux 的可分发包仍待制作。
 
@@ -56,7 +56,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-output.ps1
 ## 接下来
 
 1. 完善种子内文件选择、限速和下载队列。
-2. 完成 Edge 插件的实际侧载验收，并适配 Chrome、Firefox。
+2. 完成 Edge、Chrome 插件的实际侧载验收，并适配 Firefox。
 3. 继续验证公网下载和 macOS、Linux 可分发包。
 4. 单独适配 Safari，并评估移动端后台下载限制。
 

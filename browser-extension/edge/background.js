@@ -1,6 +1,7 @@
 const HOST = "com.aujin.aurumdownloadmanager";
 const PREFIX = "aurum-download-";
 const processing = new Set();
+const browserName = navigator.userAgent.includes("Edg/") ? "Edge" : "Chrome";
 
 function native(message) {
   return new Promise((resolve, reject) => {
@@ -16,7 +17,7 @@ function native(message) {
 async function mode() {
   const saved = await chrome.storage.local.get("mode");
   if (["ask", "always", "browser"].includes(saved.mode)) return saved.mode;
-  try { return (await native({ type: "settings" })).mode; }
+  try { return (await native({ type: "settings", browser: navigator.userAgent.includes("Edg/") ? "edge" : "chrome" })).mode; }
   catch { return "browser"; }
 }
 
@@ -90,7 +91,7 @@ chrome.downloads.onCreated.addListener(async (item) => {
     await chrome.notifications.create(`${PREFIX}${item.id}`, {
       type: "basic", iconUrl: "icon128.png", title: "选择下载方式",
       message: item.filename || item.url,
-      buttons: [{ title: "交给 Aurum" }, { title: "继续使用 Edge" }],
+      buttons: [{ title: "交给 Aurum" }, { title: `继续使用 ${browserName}` }],
       requireInteraction: true,
     });
   } catch { try { await chrome.downloads.resume(item.id); } catch { /* Already completed. */ } }

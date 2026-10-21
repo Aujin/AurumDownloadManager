@@ -13,8 +13,8 @@ export type Settings = {
   browserHandoff: "ask" | "always" | "browser";
 };
 
-export type StartupStatus = { supported: boolean; enabled: boolean; installedPath: string; warning: string | null; legacyCommand: boolean };
-type BridgeStatus = { supported: boolean; registered: boolean; extensionId: string; extensionPath: string; message: string };
+export type StartupStatus = { supported: boolean; enabled: boolean; installedPath: string; warning: string | null; legacyCommand: boolean; installedOutdated: boolean };
+type BridgeStatus = { supported: boolean; registered: boolean; chromeRegistered: boolean; edgeLastSeen: number | null; chromeLastSeen: number | null; extensionId: string; extensionPath: string; message: string; additionalExtensionIds: string[] };
 
 type Tab = "general" | "downloads" | "connection" | "proxy" | "browser";
 const tabs: { id: Tab; label: string }[] = [
@@ -48,6 +48,8 @@ export function SettingsPanel({ initial, startup, onStartupChange, onSave, onClo
   const [shortcutMessage, setShortcutMessage] = useState("");
   const [bridge, setBridge] = useState<BridgeStatus | null>(null);
   const [bridgeBusy, setBridgeBusy] = useState(false);
+  const [oldExtensionId, setOldExtensionId] = useState("");
+  const [browserMessage, setBrowserMessage] = useState("");
   useEffect(() => { void invoke<BridgeStatus>("get_edge_bridge_status").then(setBridge).catch((cause) => setError(String(cause))); }, []);
   async function changeStartup() {
     if (!startupState) return;
@@ -67,6 +69,33 @@ export function SettingsPanel({ initial, startup, onStartupChange, onSave, onClo
     try { setBridge(await invoke<BridgeStatus>("repair_edge_bridge")); }
     catch (cause) { setError(String(cause)); }
     finally { setBridgeBusy(false); }
+  }
+  async function allowOldExtension() {
+    setBridgeBusy(true); setError("");
+    try {
+      setBridge(await invoke<BridgeStatus>("allow_edge_extension", { extensionId: oldExtensionId.trim() }));
+      setBrowserMessage("已授权旧插件。请在浏览器扩展页重新加载它，再打开插件弹窗检查连接。");
+      setOldExtensionId("");
+    } catch (cause) { setError(String(cause)); }
+    finally { setBridgeBusy(false); }
+  }
+  async function openBrowser(browser: "edge" | "chrome") {
+    setBridgeBusy(true); setError(""); setBrowserMessage("");
+    try {
+      setBridge(await invoke<BridgeStatus>("repair_edge_bridge"));
+      await invoke("open_browser_install_page", { browser });
+      setBrowserMessage(`已打开 ${browser === "edge" ? "Edge" : "Chrome"} 扩展页。首次点击“加载解压缩的扩展”，选择下方固定目录；已安装则点击原插件的“重新加载”。打开插件弹窗可检查实际通信。`);
+    } catch (cause) { setError(String(cause)); }
+    finally { setBridgeBusy(false); }
+  }
+  async function checkBrowsers() {
+    setBridgeBusy(true); setError("");
+    try { setBridge(await invoke<BridgeStatus>("get_edge_bridge_status")); }
+    catch (cause) { setError(String(cause)); }
+    finally { setBridgeBusy(false); }
+  }
+  function lastSeen(at: number | null) {
+    return at ? new Date(at * 1000).toLocaleString() : "尚未收到新版插件的连接";
   }
   async function createShortcut() {
     setShortcutBusy(true); setShortcutMessage(""); setError("");
@@ -91,11 +120,11 @@ export function SettingsPanel({ initial, startup, onStartupChange, onSave, onClo
       <div className="settings-layout">
         <nav className="settings-tabs">{tabs.map((item) => <button key={item.id} className={tab === item.id ? "active" : ""} onClick={() => setTab(item.id)}>{item.label}</button>)}</nav>
         <div className="settings-content">
-          {tab === "general" && <><h3>常规</h3><label className="setting-check"><input type="checkbox" checked={draft.clipboardMonitoring} onChange={(event) => change("clipboardMonitoring", event.target.checked)} /><span><strong>监听剪切板链接</strong><small>识别 HTTP(S) 和磁力链接后弹出确认，不自动开始下载。</small></span></label>{startupState?.supported && <div className="setting-field"><label>开机启动</label><small>{startupState.enabled ? "已启用。登录 Windows 后直接在托盘运行。" : "当前未启用。"}</small><small>启用时需要管理员权限，会把完整便携版复制到 Program Files。取消开机启动只移除启动项，保留已复制的文件。</small><small className="startup-path">{startupState.installedPath}</small><div className="path-row"><button className="secondary-button" disabled={startupBusy || shortcutBusy} onClick={() => void changeStartup()}>{startupBusy ? "处理中…" : startupState.enabled ? "取消开机启动" : "启用开机启动"}</button>{startupState.enabled && <button className="secondary-button" disabled={startupBusy || shortcutBusy} onClick={() => void refreshStartup()}>更新开机启动副本</button>}<button className="secondary-button" disabled={startupBusy || shortcutBusy} onClick={() => void createShortcut()}>{shortcutBusy ? "创建中…" : "创建桌面快捷方式"}</button></div>{startupState.legacyCommand && <small>当前仍使用旧的弹窗启动项。请从新版便携包运行 Aurum，点击“更新开机启动副本”。</small>}<small>创建快捷方式时，已启用开机启动会指向 Program Files 中的副本；否则指向当前程序。</small>{shortcutMessage && <small>{shortcutMessage}</small>}{startupState.warning && <small className="modal-error">开机启动已设置，但 Edge 桥接未能迁移：{startupState.warning}</small>}</div>}</>}
+          {tab === "general" && <><h3>常规</h3><label className="setting-check"><input type="checkbox" checked={draft.clipboardMonitoring} onChange={(event) => change("clipboardMonitoring", event.target.checked)} /><span><strong>监听剪切板链接</strong><small>识别 HTTP(S) 和磁力链接后弹出确认，不自动开始下载。</small></span></label>{startupState?.supported && <div className="setting-field"><label>开机启动</label><small>{startupState.enabled ? "已启用。登录 Windows 后直接在托盘运行。" : "当前未启用。"}</small><small>启用时需要管理员权限，会把完整便携版复制到 Program Files。取消开机启动只移除启动项，保留已复制的文件。</small><small className="startup-path">{startupState.installedPath}</small><div className="path-row"><button className="secondary-button" disabled={startupBusy || shortcutBusy} onClick={() => void changeStartup()}>{startupBusy ? "处理中…" : startupState.enabled ? "取消开机启动" : "启用开机启动"}</button>{startupState.enabled && <button className="secondary-button" disabled={startupBusy || shortcutBusy} onClick={() => void refreshStartup()}>更新开机启动副本</button>}<button className="secondary-button" disabled={startupBusy || shortcutBusy} onClick={() => void createShortcut()}>{shortcutBusy ? "创建中…" : "创建桌面快捷方式"}</button></div>{startupState.legacyCommand && <small className="modal-error">当前仍使用旧的弹窗启动项。请从新版便携包运行 Aurum，点击“更新开机启动副本”。</small>}{startupState.installedOutdated && <small className="modal-error">Program Files 中的开机启动副本仍是旧版。请点击“更新开机启动副本”；若旧版仍在运行，先从旧版托盘右键退出。</small>}<small>创建快捷方式时，已启用开机启动会指向 Program Files 中的副本；否则指向当前程序。</small>{shortcutMessage && <small>{shortcutMessage}</small>}{startupState.warning && <small className="modal-error">开机启动已设置，但 Edge 桥接未能迁移：{startupState.warning}</small>}</div>}</>}
           {tab === "downloads" && <><h3>保存位置</h3><div className="setting-field"><label>默认保存目录</label><div className="path-row"><input value={draft.downloadDir} onChange={(event) => change("downloadDir", event.target.value)} /><button onClick={async () => { const path = await chooseDirectory(); if (path) change("downloadDir", path); }}>浏览</button></div><small>仅影响新任务；正在下载的任务可单独修改完成后的保存位置。</small></div><div className="setting-field"><label>半成品临时目录</label><div className="path-row"><input value={draft.temporaryDir} onChange={(event) => change("temporaryDir", event.target.value)} /><button onClick={async () => { const path = await chooseDirectory(); if (path) change("temporaryDir", path); }}>浏览</button></div><small>新任务从此处下载，完成后移到保存目录。正在下载的半成品不会在传输中搬移。</small></div><label className="setting-check"><input type="checkbox" checked={draft.organizeByExtension} onChange={(event) => change("organizeByExtension", event.target.checked)} /><span><strong>按文件后缀分配文件夹</strong><small>默认关闭。开启后将新建的链接任务分到文档、媒体、压缩包等文件夹；种子任务仍使用默认目录。</small></span></label></>}
           {tab === "connection" && <><h3>连接</h3><div className="setting-field"><label>新任务默认连接数</label><input type="number" min={1} max={32} value={draft.defaultConnections} onChange={(event) => change("defaultConnections", Number(event.target.value))} /><small>适用于 HTTP(S) 分段下载。具体速度仍取决于服务器支持。</small></div><div className="setting-field"><label>同时下载任务数</label><input type="number" min={1} max={32} value={draft.maxConcurrentDownloads} onChange={(event) => change("maxConcurrentDownloads", Number(event.target.value))} /><small>保存后立即调整 aria2 的全局任务队列。</small></div></>}
           {tab === "proxy" && <><h3>代理</h3><div className="setting-field"><label>新任务默认 HTTP 代理</label><input placeholder="留空为直连；例如 http://127.0.0.1:7890" value={draft.proxyUrl} onChange={(event) => change("proxyUrl", event.target.value)} /><small>当前仅支持不含账号密码的 HTTP 代理。进行中的任务可在任务设置中单独修改。</small></div></>}
-          {tab === "browser" && <><h3>浏览器下载接管</h3><div className="setting-field"><label>Edge 插件默认处理方式</label><select value={draft.browserHandoff} onChange={(event) => change("browserHandoff", event.target.value as Settings["browserHandoff"])}><option value="ask">每次询问</option><option value="always">交给 Aurum</option><option value="browser">使用 Edge 自身下载</option></select><small>Edge 插件会读取此默认值。你还可以在插件弹窗中覆盖它；在“每次询问”模式下，下载会暂时暂停，等待选择。</small></div>{bridge?.supported && <div className="setting-field"><label>Edge 本机通信</label><small>{bridge.message}</small><small>固定插件 ID：{bridge.extensionId}</small><small>固定插件目录：{bridge.extensionPath}</small><button className="secondary-button" disabled={bridgeBusy} onClick={() => void repairBridge()}>{bridgeBusy ? "修复中…" : "修复 Edge 连接并更新插件文件"}</button><small>第一次升级请在 edge://extensions 移除旧的同名插件，只加载上面的固定目录一次。以后更新文件后点击原插件的“重新加载”，不要再添加一个新插件。</small></div>}</>}
+          {tab === "browser" && <><h3>浏览器下载接管</h3><div className="setting-field"><label>插件默认处理方式</label><select value={draft.browserHandoff} onChange={(event) => change("browserHandoff", event.target.value as Settings["browserHandoff"])}><option value="ask">每次询问</option><option value="always">交给 Aurum</option><option value="browser">使用浏览器自身下载</option></select><small>插件弹窗可覆盖此默认值。</small></div>{bridge?.supported && <div className="setting-field"><label>安装和检查</label><small>Edge 通信组件：{bridge.registered ? "已就绪" : "未就绪"}；Chrome 通信组件：{bridge.chromeRegistered ? "已就绪" : "未就绪"}。</small><small>Edge 最近连接：{lastSeen(bridge.edgeLastSeen)}；Chrome 最近连接：{lastSeen(bridge.chromeLastSeen)}</small><div className="path-row"><button className="secondary-button" disabled={bridgeBusy} onClick={() => void openBrowser("edge")}>准备并打开 Edge 扩展页</button><button className="secondary-button" disabled={bridgeBusy} onClick={() => void openBrowser("chrome")}>准备并打开 Chrome 扩展页</button><button className="secondary-button" disabled={bridgeBusy} onClick={() => void checkBrowsers()}>检查连接</button><button className="secondary-button" disabled={bridgeBusy} onClick={() => void repairBridge()}>{bridgeBusy ? "处理中…" : "修复通信"}</button></div><small>插件固定目录：{bridge.extensionPath}</small><small>固定插件 ID：{bridge.extensionId}</small><small>首次安装请在扩展页加载上述文件夹。升级时只点击原插件的“重新加载”；重复的同名插件需要在扩展页手动移除。打开插件弹窗后点“检查连接”，即可看到最近连接时间。</small><label>兼容已安装的旧插件</label><div className="path-row"><input placeholder="粘贴旧插件的 32 位 ID" value={oldExtensionId} onChange={(event) => setOldExtensionId(event.target.value)} /><button className="secondary-button" disabled={bridgeBusy || !oldExtensionId.trim()} onClick={() => void allowOldExtension()}>授权旧插件</button></div>{bridge.additionalExtensionIds.length > 0 && <small>已授权旧 ID：{bridge.additionalExtensionIds.join("、")}</small>}{browserMessage && <small>{browserMessage}</small>}</div>}</>}
         </div>
       </div>
       {error && <p className="modal-error">{error}</p>}

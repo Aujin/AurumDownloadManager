@@ -8,6 +8,7 @@ pub struct StartupStatus {
     installed_path: String,
     warning: Option<String>,
     legacy_command: bool,
+    installed_outdated: bool,
 }
 
 #[cfg(windows)]
@@ -64,12 +65,18 @@ mod windows {
             .unwrap_or_default();
         let legacy_command = value == format!("\"{}\"", installed_exe()?.display());
         let enabled = value == command || legacy_command;
+        let installed_outdated = if enabled {
+            let current = env::current_exe().map_err(|e| e.to_string())?;
+            let installed = installed_exe()?;
+            current != installed && fs::read(current).ok() != fs::read(installed).ok()
+        } else { false };
         Ok(StartupStatus {
             supported: true,
             enabled,
             installed_path: installed_exe()?.display().to_string(),
             warning: None,
             legacy_command,
+            installed_outdated,
         })
     }
 
@@ -270,6 +277,7 @@ pub fn get_startup_status() -> Result<StartupStatus, String> {
             installed_path: String::new(),
             warning: None,
             legacy_command: false,
+            installed_outdated: false,
         })
     }
 }

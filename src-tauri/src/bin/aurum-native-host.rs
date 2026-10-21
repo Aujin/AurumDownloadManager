@@ -36,6 +36,13 @@ fn handle(message: Value) -> Result<Value, String> {
     let data_dir = app_data_dir()?;
     match message.get("type").and_then(Value::as_str) {
         Some("settings") => {
+            if let Some(browser) = message.get("browser").and_then(Value::as_str).filter(|name| matches!(*name, "edge" | "chrome")) {
+                fs::create_dir_all(&data_dir).map_err(|e| e.to_string())?;
+                let at = SystemTime::now().duration_since(UNIX_EPOCH).map_err(|e| e.to_string())?.as_secs();
+                fs::write(data_dir.join(format!("browser-{browser}-seen.json")),
+                    serde_json::to_vec(&json!({ "at": at })).map_err(|e| e.to_string())?)
+                    .map_err(|e| e.to_string())?;
+            }
             let mode = fs::read(data_dir.join("settings.json")).ok()
                 .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
                 .and_then(|value| value.get("browserHandoff").and_then(Value::as_str).map(str::to_owned))
