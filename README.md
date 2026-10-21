@@ -19,6 +19,8 @@
 
 Edge 插件试用版位于 `browser-extension/edge/`，可在插件弹窗里选择每次询问、交给 Aurum 或使用 Edge 下载。右键链接也可直接交给 Aurum。插件通过 Native Messaging 把链接送到桌面程序；目前尚未完成实际 Edge 侧载验收或商店发布。
 
+Windows 版启动时会自动注册 Edge Native Messaging 并将插件文件同步到固定的用户目录。插件 0.1.1 使用固定 ID；从旧版迁移时需移除重复插件并从“设置 → 浏览器”显示的固定目录加载一次。后续更新只需在 Edge 扩展页重新加载原插件。
+
 Windows 便携版把 aria2 1.37.0、许可文本和对应源码一同放在 `output/windows/`。桌面程序优先使用同目录的 `aria2c.exe`，无需单独安装。macOS、Linux 的可分发包仍待制作。
 
 关闭主窗口时程序会留在系统托盘继续下载，通过托盘菜单退出。在 Windows 的“设置 → 常规”中可创建桌面快捷方式；若已启用开机启动，快捷方式指向 Program Files 中的副本，否则指向当前便携版 EXE。

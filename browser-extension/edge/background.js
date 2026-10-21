@@ -74,7 +74,13 @@ chrome.downloads.onCreated.addListener(async (item) => {
       await chrome.downloads.pause(item.id);
       await native({ type: "enqueue", url: item.url });
       await chrome.downloads.cancel(item.id);
-    } catch { try { await chrome.downloads.resume(item.id); } catch { /* Already completed. */ } }
+    } catch (error) {
+      try { await chrome.downloads.resume(item.id); } catch { /* Already completed. */ }
+      chrome.notifications.create(`${PREFIX}error-${Date.now()}`, {
+        type: "basic", iconUrl: "icon128.png", title: "Aurum 未能接收下载",
+        message: String(error.message || error),
+      });
+    }
     return;
   }
   try {

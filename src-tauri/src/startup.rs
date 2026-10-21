@@ -4,9 +4,10 @@ use serde::Serialize;
 #[serde(rename_all = "camelCase")]
 pub struct StartupStatus {
     supported: bool,
-    enabled: bool,
+    pub(crate) enabled: bool,
     installed_path: String,
     warning: Option<String>,
+    legacy_command: bool,
 }
 
 #[cfg(windows)]
@@ -45,7 +46,7 @@ mod windows {
     }
 
     fn startup_command() -> Result<String, String> {
-        Ok(format!("\"{}\"", installed_exe()?.display()))
+        Ok(format!("\"{}\" --startup-hidden", installed_exe()?.display()))
     }
 
     fn run_key() -> Result<RegKey, String> {
@@ -58,15 +59,17 @@ mod windows {
 
     pub fn status() -> Result<StartupStatus, String> {
         let command = startup_command()?;
-        let enabled = run_key()?
+        let value = run_key()?
             .get_value::<String, _>(VALUE_NAME)
-            .map(|value| value == command)
-            .unwrap_or(false);
+            .unwrap_or_default();
+        let legacy_command = value == format!("\"{}\"", installed_exe()?.display());
+        let enabled = value == command || legacy_command;
         Ok(StartupStatus {
             supported: true,
             enabled,
             installed_path: installed_exe()?.display().to_string(),
             warning: None,
+            legacy_command,
         })
     }
 
@@ -266,6 +269,7 @@ pub fn get_startup_status() -> Result<StartupStatus, String> {
             enabled: false,
             installed_path: String::new(),
             warning: None,
+            legacy_command: false,
         })
     }
 }

@@ -2,6 +2,7 @@ mod placement;
 mod probe;
 mod settings;
 mod startup;
+mod edge_bridge;
 
 use base64::Engine as _;
 use placement::{Placement, Placements};
@@ -506,6 +507,7 @@ pub fn run() {
     if startup::run_copy_helper() {
         return;
     }
+    let startup_hidden = std::env::args_os().any(|arg| arg == "--startup-hidden");
     tauri::Builder::default()
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_dialog::init())
@@ -515,7 +517,7 @@ pub fn run() {
                 let _ = window.hide();
             }
         })
-        .setup(|app| {
+        .setup(move |app| {
             let show = MenuItem::with_id(app, "show", "显示主窗口", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "退出 Aurum", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&show, &quit])?;
@@ -566,8 +568,12 @@ pub fn run() {
                 placements: placement::load(&placements_path),
                 placements_path,
             });
+            edge_bridge::install_on_start(&handle);
             watch_clipboard(handle);
             watch_extension_inbox(app.handle().clone());
+            if !startup_hidden {
+                if let Some(window) = app.get_webview_window("main") { window.show()?; }
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -585,6 +591,8 @@ pub fn run() {
             startup::get_startup_status,
             startup::set_startup_enabled,
             startup::create_desktop_shortcut,
+            edge_bridge::get_edge_bridge_status,
+            edge_bridge::repair_edge_bridge,
         ])
         .run(tauri::generate_context!())
         .expect("failed to run Aurum Download Manager");

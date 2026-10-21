@@ -10,7 +10,7 @@
     "frontendDist": "../dist"
   },
   "app": {
-    "windows": [{ "title": "Aurum Download Manager", "width": 1180, "height": 760, "minWidth": 860, "minHeight": 600 }],
+    "windows": [{ "title": "Aurum Download Manager", "width": 1180, "height": 760, "minWidth": 860, "minHeight": 600, "visible": false }],
     "security": { "csp": null }
   },
   "bundle": { "active": true, "targets": "all" }

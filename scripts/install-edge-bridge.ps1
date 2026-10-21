@@ -1,9 +1,11 @@
-param([Parameter(Mandatory = $true)][string]$ExtensionId)
+param([string]$ExtensionId = 'klblkidgakkmnemkgdhgdpjlhblbhhgb')
 
 $ErrorActionPreference = 'Stop'
 if ($ExtensionId -cnotmatch '^[a-p]{32}$') { throw 'Enter the 32-character ID shown on edge://extensions.' }
 $hostBinary = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot 'aurum-native-host.exe')).Path
-$manifestPath = Join-Path $PSScriptRoot 'native-host.json'
+$dataDir = Join-Path $env:APPDATA 'com.aujin.aurumdownloadmanager'
+New-Item -ItemType Directory -Path $dataDir -Force | Out-Null
+$manifestPath = Join-Path $dataDir 'native-host.json'
 $manifest = [ordered]@{
   name = 'com.aujin.aurumdownloadmanager'
   description = 'Aurum Download Manager bridge'
