@@ -43,11 +43,7 @@ mod windows {
     fn host_path() -> Result<PathBuf, String> {
         let current = std::env::current_exe().map_err(|e| e.to_string())?;
         let current_host = current.parent().ok_or("无法定位 Aurum 目录")?.join("aurum-native-host.exe");
-        if crate::startup::get_startup_status()?.enabled {
-            let installed = PathBuf::from(std::env::var_os("ProgramFiles").ok_or("无法定位 Program Files")?)
-                .join("Aurum Download Manager").join("aurum-native-host.exe");
-            if installed.is_file() { return Ok(installed); }
-        }
+        if let Some(installed) = crate::startup::startup_host_path() { return Ok(installed); }
         if current_host.is_file() { Ok(current_host) }
         else { Err("当前目录缺少 aurum-native-host.exe；请使用完整便携包。".into()) }
     }

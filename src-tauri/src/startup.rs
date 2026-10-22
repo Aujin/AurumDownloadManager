@@ -19,6 +19,7 @@ mod windows {
         env, fs,
         path::{Path, PathBuf},
         process::Command,
+        sync::Mutex,
     };
     use winreg::{enums::HKEY_CURRENT_USER, RegKey};
 
@@ -27,9 +28,10 @@ mod windows {
     const NATIVE_KEY: &str =
         r"Software\Microsoft\Edge\NativeMessagingHosts\com.aujin.aurumdownloadmanager";
     const HELPER_ARG: &str = "--install-startup-files";
-    const REQUIRED_FILES: &[&str] = &["aurum-download-manager.exe", "aria2c.exe"];
+    const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
+    static AUTO_UPDATE_WARNING: Mutex<Option<String>> = Mutex::new(None);
+    const REQUIRED_FILES: &[&str] = &["aurum-download-manager.exe", "aria2c.exe", "aurum-native-host.exe"];
     const OPTIONAL_FILES: &[&str] = &[
-        "aurum-native-host.exe",
         "aria2-COPYING.txt",
         "aria2-source-1.37.0.zip",
         "install-edge-bridge.ps1",
@@ -37,17 +39,61 @@ mod windows {
     ];
     const EDGE_EXTENSION_FILES: &[&str] = &["manifest.json", "background.js", "popup.html", "popup.js", "icon128.png"];
 
-    fn install_dir() -> Result<PathBuf, String> {
+    fn install_root() -> Result<PathBuf, String> {
         let program_files = env::var_os("ProgramFiles").ok_or("无法找到 Program Files 目录")?;
         Ok(PathBuf::from(program_files).join("Aurum Download Manager"))
+    }
+
+    fn install_dir() -> Result<PathBuf, String> {
+        Ok(install_root()?.join("versions").join(CURRENT_VERSION))
     }
 
     fn installed_exe() -> Result<PathBuf, String> {
         Ok(install_dir()?.join("aurum-download-manager.exe"))
     }
 
-    fn startup_command() -> Result<String, String> {
-        Ok(format!("\"{}\" --startup-hidden", installed_exe()?.display()))
+    fn startup_command(exe: &Path) -> String {
+        format!("\"{}\" --startup-hidden", exe.display())
+    }
+
+    fn parse_version(version: &str) -> Option<[u32; 3]> {
+        let values: Vec<_> = version.split('.').map(str::parse::<u32>).collect::<Result<_, _>>().ok()?;
+        values.try_into().ok()
+    }
+
+    fn active_exe() -> Result<Option<(PathBuf, bool)>, String> {
+        let value = run_key()?.get_value::<String, _>(VALUE_NAME).unwrap_or_default();
+        Ok(parse_active_command(&value, &install_root()?))
+    }
+
+    fn parse_active_command(value: &str, root: &Path) -> Option<(PathBuf, bool)> {
+        let Some(rest) = value.strip_prefix('"') else { return None };
+        let Some((path, args)) = rest.split_once('"') else { return None };
+        if args != " --startup-hidden" && !args.is_empty() { return None; }
+        let exe = PathBuf::from(path);
+        let legacy = root.join("aurum-download-manager.exe");
+        let versioned = exe.file_name().and_then(|name| name.to_str()) == Some("aurum-download-manager.exe")
+            && exe.parent().and_then(Path::parent) == Some(root.join("versions").as_path())
+            && exe.parent().and_then(Path::file_name).and_then(|name| name.to_str())
+                .and_then(parse_version).is_some();
+        if exe != legacy && !versioned { return None; }
+        Some((exe, args.is_empty()))
+    }
+
+    fn installed_version(exe: &Path) -> Option<[u32; 3]> {
+        if !exe.is_file() { return Some([0, 0, 0]); }
+        if exe.parent().and_then(Path::parent) == Some(install_root().ok()?.join("versions").as_path()) {
+            return exe.parent()?.file_name()?.to_str().and_then(parse_version);
+        }
+        let script = "[Diagnostics.FileVersionInfo]::GetVersionInfo($env:ADM_VERSION_TARGET).ProductVersion";
+        let mut command = Command::new("powershell.exe");
+        command.args(["-NoProfile", "-NonInteractive", "-Command", script])
+            .env("ADM_VERSION_TARGET", exe);
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x08000000);
+        let output = command.output().ok()?;
+        if !output.status.success() { return None; }
+        parse_version(String::from_utf8_lossy(&output.stdout).trim())
     }
 
     fn run_key() -> Result<RegKey, String> {
@@ -59,23 +105,19 @@ mod windows {
     }
 
     pub fn status() -> Result<StartupStatus, String> {
-        let command = startup_command()?;
-        let value = run_key()?
-            .get_value::<String, _>(VALUE_NAME)
-            .unwrap_or_default();
-        let legacy_command = value == format!("\"{}\"", installed_exe()?.display());
-        let enabled = value == command || legacy_command;
-        let installed_outdated = if enabled {
-            let current = env::current_exe().map_err(|e| e.to_string())?;
-            let installed = installed_exe()?;
-            current != installed && fs::read(current).ok() != fs::read(installed).ok()
-        } else { false };
+        let active = active_exe()?;
+        let installed_outdated = active.as_ref()
+            .and_then(|(exe, _)| installed_version(exe))
+            .zip(parse_version(CURRENT_VERSION))
+            .map(|(installed, current)| installed < current)
+            .unwrap_or(false);
+        let warning = AUTO_UPDATE_WARNING.lock().ok().and_then(|value| value.clone());
         Ok(StartupStatus {
             supported: true,
-            enabled,
-            installed_path: installed_exe()?.display().to_string(),
-            warning: None,
-            legacy_command,
+            enabled: active.is_some(),
+            installed_path: active.as_ref().map(|(exe, _)| exe.clone()).unwrap_or(installed_exe()?).display().to_string(),
+            warning,
+            legacy_command: active.as_ref().map(|(_, legacy)| *legacy).unwrap_or(false),
             installed_outdated,
         })
     }
@@ -126,9 +168,12 @@ mod windows {
         let current_exe = env::current_exe().map_err(|e| e.to_string())?;
         let source = current_exe.parent().ok_or("无法找到便携版目录")?;
         let destination = install_dir()?;
-        if source == destination {
-            if !destination.join("aria2c.exe").is_file() {
-                return Err("Program Files 中缺少 aria2c.exe，请从完整便携包重新启用。".into());
+        if source == destination || (installed_exe()?.is_file() && destination.join("aria2c.exe").is_file()
+            && destination.join("aurum-native-host.exe").is_file()) {
+            for name in REQUIRED_FILES {
+                if !destination.join(name).is_file() {
+                    return Err(format!("Program Files 中缺少 {name}，请从完整便携包重新启用。"));
+                }
             }
             return Ok(());
         }
@@ -195,11 +240,18 @@ mod windows {
     pub fn set_enabled(enabled: bool) -> Result<StartupStatus, String> {
         let mut warning = None;
         if enabled {
+            if let Some((active, _)) = active_exe()? {
+                if installed_version(&active).zip(parse_version(CURRENT_VERSION))
+                    .map(|(installed, current)| installed > current).unwrap_or(false) {
+                    return Err("开机启动副本比当前运行的便携版更新，请使用更新的便携版。".into());
+                }
+            }
             install_files()?;
             warning = migrate_edge_bridge().err();
             run_key()?
-                .set_value(VALUE_NAME, &startup_command()?)
+                .set_value(VALUE_NAME, &startup_command(&installed_exe()?))
                 .map_err(|e| format!("无法写入开机启动设置：{e}"))?;
+            if let Err(error) = update_existing_shortcut(&installed_exe()?) { warning = Some(error); }
         } else {
             let key = run_key()?;
             match key.delete_value(VALUE_NAME) {
@@ -210,12 +262,42 @@ mod windows {
         }
         let mut status = status()?;
         status.warning = warning;
+        if let Ok(mut value) = AUTO_UPDATE_WARNING.lock() { *value = status.warning.clone(); }
         Ok(status)
     }
 
+    pub fn auto_update_if_newer() -> Result<(), String> {
+        if status()?.installed_outdated {
+            if let Err(error) = set_enabled(true) {
+                if let Ok(mut value) = AUTO_UPDATE_WARNING.lock() { *value = Some(error.clone()); }
+                return Err(error);
+            }
+        }
+        Ok(())
+    }
+
+    pub fn startup_host_path() -> Option<PathBuf> {
+        active_exe().ok().flatten().map(|(exe, _)| exe.with_file_name("aurum-native-host.exe"))
+            .filter(|path| path.is_file())
+    }
+
+    fn update_existing_shortcut(target: &Path) -> Result<(), String> {
+        let script = "$ErrorActionPreference = 'Stop'; $desktop = [Environment]::GetFolderPath('DesktopDirectory'); if (-not $desktop) { exit 0 }; $link = Join-Path $desktop 'Aurum Download Manager.lnk'; if (-not (Test-Path -LiteralPath $link)) { exit 0 }; $shell = New-Object -ComObject WScript.Shell; $shortcut = $shell.CreateShortcut($link); $old = [IO.Path]::GetFullPath($shortcut.TargetPath); if ([IO.Path]::GetFileName($old) -ieq 'aurum-download-manager.exe') { $shortcut.TargetPath = $env:ADM_SHORTCUT_TARGET; $shortcut.WorkingDirectory = Split-Path -Parent $env:ADM_SHORTCUT_TARGET; $shortcut.IconLocation = $env:ADM_SHORTCUT_TARGET + ',0'; $shortcut.Save() }";
+        let mut command = Command::new("powershell.exe");
+        command.args(["-NoProfile", "-NonInteractive", "-Command", script])
+            .env("ADM_SHORTCUT_TARGET", target);
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x08000000);
+        let result = command.output().map_err(|e| format!("无法更新桌面快捷方式：{e}"))?;
+        if !result.status.success() {
+            return Err(format!("无法更新桌面快捷方式：{}", String::from_utf8_lossy(&result.stderr).trim()));
+        }
+        Ok(())
+    }
+
     pub fn create_desktop_shortcut() -> Result<String, String> {
-        let target = if status()?.enabled {
-            installed_exe()?
+        let target = if let Some((exe, _)) = active_exe()? {
+            exe
         } else {
             env::current_exe().map_err(|e| format!("无法定位当前程序：{e}"))?
         };
@@ -253,10 +335,61 @@ mod windows {
             });
         std::process::exit(if result.is_ok() { 0 } else { 1 });
     }
+
+    #[cfg(test)]
+    mod tests {
+        use super::{copy_portable_files, parse_active_command, parse_version};
+        use std::{fs, path::Path, time::{SystemTime, UNIX_EPOCH}};
+
+        #[test]
+        fn compares_versions_numerically() {
+            assert!(parse_version("0.1.10") > parse_version("0.1.9"));
+            assert_eq!(parse_version("0.1.1"), Some([0, 1, 1]));
+            assert_eq!(parse_version("0.1.1-preview"), None);
+        }
+
+        #[test]
+        fn accepts_legacy_and_versioned_startup_commands() {
+            let root = Path::new(r"C:\Program Files\Aurum Download Manager");
+            let legacy = r#""C:\Program Files\Aurum Download Manager\aurum-download-manager.exe""#;
+            let current = r#""C:\Program Files\Aurum Download Manager\versions\0.1.1\aurum-download-manager.exe" --startup-hidden"#;
+            assert!(parse_active_command(legacy, root).unwrap().1);
+            assert!(!parse_active_command(current, root).unwrap().1);
+            assert!(parse_active_command(r#""C:\Other\aurum-download-manager.exe" --startup-hidden"#, root).is_none());
+        }
+
+        #[test]
+        fn stages_complete_portable_version() {
+            let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+            let root = std::env::temp_dir().join(format!("aurum-startup-copy-test-{}-{nonce}", std::process::id()));
+            let source = root.join("source");
+            let destination = root.join("versions").join("0.1.1");
+            fs::create_dir_all(source.join("edge-extension")).unwrap();
+            for name in ["aurum-download-manager.exe", "aria2c.exe", "aurum-native-host.exe"] {
+                fs::write(source.join(name), name).unwrap();
+            }
+            fs::write(source.join("edge-extension/manifest.json"), "{}").unwrap();
+            let result = copy_portable_files(&source, &destination);
+            assert!(result.is_ok(), "{result:?}");
+            for name in ["aurum-download-manager.exe", "aria2c.exe", "aurum-native-host.exe", "edge-extension/manifest.json"] {
+                assert_eq!(fs::read(source.join(name)).unwrap(), fs::read(destination.join(name)).unwrap());
+            }
+            fs::remove_dir_all(root).unwrap();
+        }
+    }
 }
 
 #[cfg(windows)]
 pub use windows::run_copy_helper;
+
+#[cfg(windows)]
+pub use windows::{auto_update_if_newer, startup_host_path};
+
+#[cfg(not(windows))]
+pub fn auto_update_if_newer() -> Result<(), String> { Ok(()) }
+
+#[cfg(not(windows))]
+pub fn startup_host_path() -> Option<std::path::PathBuf> { None }
 
 #[cfg(not(windows))]
 pub fn run_copy_helper() -> bool {

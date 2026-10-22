@@ -568,6 +568,9 @@ pub fn run() {
                 placements: placement::load(&placements_path),
                 placements_path,
             });
+            if let Err(error) = startup::auto_update_if_newer() {
+                eprintln!("Aurum startup update: {error}");
+            }
             edge_bridge::install_on_start(&handle);
             watch_clipboard(handle);
             watch_extension_inbox(app.handle().clone());
